@@ -122,7 +122,8 @@ a pull request.
 - `tests/test_treasury_decisions.py` holds one test per treasury ruling. **Never
   edit or delete one of those tests to make your change pass.** If your change
   breaks one, stop and ask.
-- `ais_fmd/config/categories.py` and `ais_fmd/config/card_roster.json` are
+- `ais_fmd/config/categories.py`, `ais_fmd/config/card_roster.json` and
+  `ais_fmd/config/spend_policy.json` are
   treasurer-owned. Propose changes in your PR description; do not make them.
 - Never add `"membership"` to `MEMO_COMMITTEE_KEYWORDS`. It appears in dues memos
   and would misfile dues income as a Membership expense.

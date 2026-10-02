@@ -28,7 +28,7 @@
 - [ ] Base branch is `sandbox/mvp-rebuild`
 - [ ] No real statements, roster data, member names, UFIDs, card numbers or keys — in code, tests, screenshots or this description
 - [ ] I restarted Streamlit after editing anything under `ais_fmd/` and checked the page by hand
-- [ ] I did not edit `tests/test_treasury_decisions.py`, `config/categories.py` or `config/card_roster.json` (or: the treasurer approved it — link below)
+- [ ] I did not edit `tests/test_treasury_decisions.py`, `config/categories.py`, `config/card_roster.json` or `config/spend_policy.json` (or: the treasurer approved it — link below)
 - [ ] If I touched `app.py`, `ui/shell.py` or a backend file, I said why above
 
 ## Anything that needs a treasurer decision

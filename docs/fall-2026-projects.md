@@ -106,19 +106,43 @@ only, so nobody uses them.
    spot-check labels. Use the weighted estimate `spotcheck.agreement` returns
    (`weighted_rate`, `margin`), not the raw share -- the sample over-picks rare
    committees and large amounts on purpose.
+5. **Spend review.** Categorization answers *whose* purchase it is; this asks
+   whether it *fits* that committee. Each merchant gets a type (hardware, gas
+   station, restaurant...) and `config/spend_policy.json` says, per committee,
+   which types are `expected`, `ask` (we'd like a one-line reason) or
+   `not_allowed`. Plus checks that ignore merchant type: missing receipt,
+   unknown card, a charge repeating across months, transfers to individuals
+   with no reimbursement. Results land in a **Spend Review** tab in the Review
+   Queue where the treasurer marks each one *Explained*, *Ask VP* or
+   *Escalate*, with a note. A dry run of the draft policy on real history
+   flags about 4-6% of categorized card purchases.
+   - **Tone.** Every note reads as a friendly question ("Lowe's isn't usual for
+     Membership -- what was this for?"), never an accusation.
+   - **The model's job is narrow.** It may classify a merchant the keyword list
+     does not know (cached per merchant, correctable) and word the question to
+     the VP. It never decides whether a purchase is acceptable and never
+     changes a category. Tests use a stub; the sandbox cannot call a model.
+   - **Never writes a category.** Spend review and categorization stay
+     separate: neither may change the other's output.
 
 **Files.** `domain/categorize/*`, `views/ReviewQueue.py`, `scripts/`, new tests
-beside `tests/test_scoring.py`, `test_learning.py`, `test_spotcheck.py`.
+beside `tests/test_scoring.py`, `test_learning.py`, `test_spotcheck.py`. Spend
+review: a new `domain/spend_review.py` (pure pandas) with `tests/test_spend_review.py`,
+reading `config/spend_policy.json`; review decisions need a new table, so a
+numbered migration plus the matching sandbox SQLite change.
 
 **Rules for this team especially.** Anything that changes where money is booked
 is a proposal the treasurer confirms. Do not change weights, thresholds or
 keyword tables to make a number go up — `tests/test_treasury_decisions.py` and
 `docs/treasury-questions.md` explain why each one is what it is. Never add
 `"membership"` to the memo keywords.
+`config/spend_policy.json` is the treasurer's, like `card_roster.json`:
+propose changes, don't make them.
 
 **Done means.** Spot-check and re-categorize work end to end in the sandbox with
 tests; nothing writes a category without an explicit confirm step (a test
-proves it).
+proves it). Spend review runs on the sandbox seed, reports its flag
+rate, and a test proves it never changes a category.
 
 **Out of scope.** Turning on the LLM pass — the sandbox deliberately cannot call
 one, and it only helps a small residual.

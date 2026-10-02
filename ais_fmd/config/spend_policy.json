@@ -1,0 +1,169 @@
+{
+  "_README": [
+    "What each committee normally buys. EDIT THIS FILE, not Python.",
+    "",
+    "The spend review reads this to decide which purchases get a friendly",
+    "'can you tell us what this was for?' note. It never changes a category and",
+    "never decides anything on its own -- a treasurer reads every flag.",
+    "",
+    "Each committee lists merchant TYPES (defined under merchant_types below) at",
+    "one of three levels:",
+    "",
+    "  expected     : routine for this committee. No note.",
+    "  ask          : can be fine, but we would like a one-line reason.",
+    "  not_allowed  : outside policy. Always reviewed by the treasurer.",
+    "",
+    "A type a committee does not list falls back to `default_level`. Org-wide",
+    "levels under `everyone` override a committee's own list.",
+    "",
+    "DRAFT 2026-10-02, built from 611 card purchases (Supabase, May 2022 - Jan",
+    "2026, plus the Fall 2026 statement). 'History' notes count past purchases",
+    "per type; a type used often is 'expected' unless it is a known risk.",
+    "Keys beginning with an underscore are ignored."
+  ],
+
+  "_DECISIONS_NEEDED": [
+    "1. Alcohol retail (Total Wine, ABC, Gator Beverage). Membership bought it 33",
+    "   times. Drafted as 'expected' for Membership and Formal, 'ask' elsewhere.",
+    "   Confirm this matches UF and AIS policy on alcohol and org funds.",
+    "2. Receipt threshold: drafted at $75. Lower catches more, costs VPs time.",
+    "3. Online marketplaces (Amazon etc.) are 'expected' where history shows them,",
+    "   but the bank line says nothing about WHAT was bought -- they always need a",
+    "   receipt, whatever the amount.",
+    "4. Gas stations: under $25 is fine for anyone (ice, snacks); over that, 'ask'",
+    "   except Road Trip. (Treasurer, 2026-10-02.)",
+    "5. Cross-committee cover: is a Membership card paying for Passport or Formal",
+    "   events fine as long as it is booked to the right budget? If yes, those",
+    "   mismatch groups can be marked expected for that card pair."
+  ],
+
+  "review_window_months": 12,
+  "_review_window": "Only purchases from the last 12 months are reviewed. Older history is settled (treasurer, 2026-10-02) and is used only to learn what is normal.",
+
+  "default_level": "ask",
+
+  "event_types": ["bar_venue", "restaurant_catering", "grocery_bulk", "alcohol_retail", "entertainment_activity"],
+  "_event_types": "Store types that mean 'an event happened'. A committee marked events_belong_elsewhere gets a note on these that suggests which committee usually pays for that kind of spending.",
+
+  "small_ok_under": {
+    "_why": "Below these amounts a store type is fine for any committee: a few dollars at a gas station is ice or snacks for an event (treasurer, 2026-10-02).",
+    "fuel_convenience": 25.00
+  },
+
+  "thresholds": {
+    "receipt_required_over": 75.00,
+    "large_purchase_over": 500.00,
+    "recurring_min_count": 3,
+    "recurring_min_amount": 20.00,
+    "ticketed_outing_over": 250.00
+  },
+
+  "rules": {
+    "_comment": [
+      "Checks that do not depend on the merchant type. Each produces a note at the given level.",
+      "Only CATEGORIZED rows are reviewed: an uncategorized row is the categorizer's",
+      "job first. Lessons from the dry run (2026-10-02) are folded in below."
+    ],
+    "missing_receipt":       {"level": "ask", "why": "Over receipt_required_over with no receipt attached. Over large_purchase_over, the receipt should also name the event. A large purchase WITH a receipt gets no note: big socials are routine."},
+    "unknown_card":          {"level": "ask", "why": "Card is not on card_roster.json for this period."},
+    "outside_term":          {"level": "ask", "why": "Dated between terms, when no committee events are scheduled."},
+    "recurring_charge":      {"level": "ask", "why": "Same merchant and amount in recurring_min_count or more DIFFERENT MONTHS, at or over recurring_min_amount. Count across all rows, categorized or not. Same-day repeats are a group tab, not a subscription. Software is exempt."},
+    "same_day_split":        {"level": "ask", "why": "Several charges at one merchant on one day that together pass receipt_required_over: one note for the group, asking for the receipt."},
+    "transfer_to_individual":{"level": "ask", "why": "Zelle/Venmo out to a person with no matching reimbursement request."},
+    "card_committee_mismatch":{"level": "ask", "why": "Bought on a card the roster assigns to one committee but booked to another. Either the booking is wrong, or one committee covered for another (often a card gap at the start of a term). Shown grouped by card, not row by row."},
+    "ticketed_outing":       {"level": "ask", "why": "Activities & entertainment over ticketed_outing_over (theme parks, escape rooms...). Often members pay part back, so the note asks whether they did and points at their payments to match. Flagged even when the outing itself is normal for the committee (treasurer, 2026-10-02: Busch Gardens)."},
+    "before_card_issued":    {"level": "ask", "why": "For a committee marked events_belong_elsewhere: if the suggested committee's current card had not been used yet on that date, the note says so -- the usual reason the spending landed on the wrong budget."},
+    "_rejected": "Large purchases alone are NOT flagged when the store type is expected for the committee: bar tabs at Arcade Bar or The Backyard are what Membership spends on (treasurer, 2026-10-02)."
+  },
+
+  "_DRY_RUN_2026_10_02": [
+    "Review window Oct 2, 2025 - Sep 4, 2026. Tuned against the treasurer's verdicts",
+    "on the v2 flags (2026-10-02):",
+    "  kept    Dick's on Membership; both President event charges (Aug 17/24, before",
+    "          Membership's card was first used Sep 1); Busch Gardens (ticketed outing).",
+    "  dropped Arcade Bar x2, The Backyard (normal tabs); Consulting's Walmart.com,",
+    "          Bambuu, Samurai (Consulting meeting food); Passport's Dick's (Passport is",
+    "          light review); $6.40 gas station (under $25).",
+    "Grouped tabs unchanged: card 3568 / 5718 cross-committee groups; unknown cards",
+    "0153 and 1113."
+  ],
+
+  "merchant_types": {
+    "gift_cards_cash":        {"label": "Gift cards & cash",            "keywords": ["GIFT CARD", "GIFTCARD", "VANILLA", "ATM ", "CASH ADV", "MONEYGRAM", "WESTERN UNION", "COINBASE", "CASH APP"]},
+    "hardware_home":          {"label": "Hardware & home",              "keywords": ["LOWE'S", "LOWES", "HOME DEPOT", "HOMEDEPOT", "ACE HARDWARE", "HARBOR FREIGHT", "IKEA", "RURAL KING", "GAINESVILLE RURAL"]},
+    "fuel_convenience":       {"label": "Gas stations",                 "keywords": ["CHEVRON", "SHELL OIL", "SHELL SERVICE", "EXXON", "CIRCLE K", "RACETRAC", "SUNOCO", "WAWA", "GATE #", "GATE 1", "GATEWAY #", "MURPHY"]},
+    "personal_retail":        {"label": "Personal retail & streaming",  "keywords": ["CVS", "WALGREENS", "ULTA", "SEPHORA", "NIKE", "ZARA", "OLD NAVY", "APPLE.COM/BILL", "NETFLIX", "SPOTIFY", "HULU", "STEAMGAMES", "PLAYSTATION", "XBOX", "LYFT"]},
+    "online_marketplace":     {"label": "Online marketplaces",          "keywords": ["AMZN", "AMAZON", "WALMART.COM", "TARGET.COM", "EBAY", "ETSY", "TEMU", "SHEIN"]},
+    "alcohol_retail":         {"label": "Liquor & beverage stores",     "keywords": ["TOTAL WINE", "TOTALWINE", "ABC FINE WINE", "GATOR SPIRITS", "SUPERETTE WINE", "GATOR BEVERAGE", "LIQUOR"]},
+    "bar_venue":              {"label": "Bars & event venues",          "keywords": ["SALTY DOG", "ROWDY REP", "ARCADE BAR", "PALOMINO", "HIGH DIVE", "MAIN ST. BAR", "THE SOCIAL", "BEACH GNV", "THE GROVE", "DOWNTOWN FATS", "LOCKER RO", "THE ATLANTIC", "PARKSIDE", "FIRST MAGNITUD", "MACDINTONS", "TOMMYKNOCKERS", "THE BACKYARD", "TROPICAL ISLE", "HUMBLE WOOD"]},
+    "grocery_bulk":           {"label": "Grocery & bulk",               "keywords": ["PUBLIX", "SAMS CLUB", "SAM'S CLUB", "SAMSCLUB", "ALDI", "WAL-MART", "WM SUPERCENTER", "TARGET T", "TARGET 0000", "INSTACART", "DOLLAR TREE", "DOLLAR GENERAL", "FIVE BELO", "ENSON MARKET", "LA AURORA", "COSTCO", "WINN-DIXIE", "TRADER JOE"]},
+    "restaurant_catering":    {"label": "Restaurants & catering",       "keywords": ["PIESANOS", "PANDA EXPRESS", "CHICK-FIL-A", "HUEY MAGOOS", "CHIPOTLE", "LAS CARRETAS", "BOCA FIESTA", "MI APA", "TINKER LATIN", "SAMURAI", "RAISING CANES", "BOLAY", "EZCATER", "DOMINO", "TACO BELL", "KRISPY KREME", "DUNKIN", "DD/BR", "BENTO", "POKEBOWL", "SHAKE SHACK", "PDQ", "GYROS", "EL INDIO", "HANA SUSHI", "BAMBUU", "CRAB", "MENCHIES", "UBER EATS", "GROG HOUSE", "LIL RUDY", "SWAMP RES", "PIZZA", "SUBWAY", "JIMMY JOHN", "STARBUCKS", "WINGSTOP", "CATERING"]},
+    "entertainment_activity": {"label": "Activities & entertainment",   "keywords": ["BUSCH GARDENS", "DAVE & BUSTERS", "ESCAPOLOGY", "GAME ROOM", "UF RECREATION", "UF UNION ARTS", "BOXCAR", "SWIPESTUDIO", "TOPGOLF", "CINEMA", "REGAL", "AMC "]},
+    "print_merch_awards":     {"label": "Printing, merch & awards",     "keywords": ["TARGET COPY", "LOGOKICK", "4IMPRINT", "NATIONAL PEN", "CUSTOMPINS", "TROPHY SHOP", "HONOR CORD", "RAD WEAR", "SUNSHINE FITS", "CLOTHES ON", "TABLECOVERS", "VISTAPRINT", "FEDEX OFFICE", "UPS STORE", "CUSTOMINK", "STICKER"]},
+    "craft_party":            {"label": "Craft & party supplies",       "keywords": ["MICHAELS", "SPIRIT HALLOWEEN", "PARTY CITY", "HOBBY LOBBY", "JOANN"]},
+    "sporting_goods":         {"label": "Sporting goods",               "keywords": ["DICKS", "ACADEMY SPORTS"]},
+    "software_telecom":       {"label": "Software, web & phone",        "keywords": ["ATLASSIAN", "WIX", "CANVA", "DISCORD", "ABLEBITS", "2CHECKO", "US MOBILE", "GOOGLE *", "MICROSOFT", "ZOOM", "ADOBE", "NOTION", "SLACK", "GODADDY", "SQUARESPACE"]},
+    "fees_dues_govt":         {"label": "Fees, dues & registrations",   "keywords": ["SUNBIZ", "ASSOCIATION FOR IN", "501C3", "STATE OF FL"]},
+    "travel_lodging":         {"label": "Travel & lodging",             "keywords": ["VRBO", "AIRBNB", "HOTEL", "MARRIOTT", "HILTON", "HYATT", "PARKING", "PULLMAN", "DELTA", "AMERICAN AIR", "SOUTHWEST", "SPIRIT AIRL", "ENTERPRISE", "HERTZ", "GREYHOUND"]}
+  },
+
+  "_type_order": "Types are matched top to bottom; the first keyword hit wins, so the riskiest types come first. A merchant matching nothing is 'unknown' and gets default_level until someone adds a keyword.",
+
+  "everyone": {
+    "gift_cards_cash": "not_allowed",
+    "personal_retail": "ask",
+    "hardware_home": "ask"
+  },
+
+  "committees": {
+    "2":  {"name": "Treasury",
+           "expected": ["software_telecom", "fees_dues_govt", "print_merch_awards", "online_marketplace"],
+           "_history": "print 7, software 4, online 3, fees 1"},
+    "4":  {"name": "President",
+           "expected": ["print_merch_awards", "fees_dues_govt", "software_telecom", "online_marketplace", "travel_lodging", "craft_party"],
+           "events_belong_elsewhere": true,
+           "_why": "President is discretionary overhead (treasurer, 2026-10-02). Event spending on this budget usually means the President covered for a committee that had no card yet, so the note suggests the committee that normally pays for it.",
+           "_history": "print 10, restaurant 4, bar 3, online 3, travel 2, alcohol 2, fees 2. Fall 2026: $298.96 MacDinton's and $307.75 The Swamp, both before committee cards were issued."},
+    "5":  {"name": "Membership",
+           "expected": ["grocery_bulk", "bar_venue", "alcohol_retail", "restaurant_catering", "online_marketplace", "entertainment_activity", "craft_party", "print_merch_awards"],
+           "_history": "grocery 78, bar 52, alcohol 33, online 20, restaurant 17, gas 6, activities 5, craft 4, print 4, hardware 1 (the Lowe's), sporting 1"},
+    "6":  {"name": "Operations",
+           "expected": ["print_merch_awards", "online_marketplace", "software_telecom", "craft_party"],
+           "_history": "print 5, online 2"},
+    "7":  {"name": "Consulting",
+           "expected": ["restaurant_catering", "grocery_bulk", "bar_venue", "software_telecom", "entertainment_activity", "online_marketplace"],
+           "_history": "restaurant 63, grocery 40, bar 23, software 15, activities 6, gas 3, alcohol 1"},
+    "8":  {"name": "Meeting Food",
+           "expected": ["restaurant_catering", "grocery_bulk"],
+           "_history": "restaurant 32, grocery 27, gas 1"},
+    "9":  {"name": "Marketing",
+           "expected": ["print_merch_awards", "software_telecom", "online_marketplace", "craft_party"],
+           "_history": "online 1"},
+    "10": {"name": "Professional Development",
+           "expected": ["restaurant_catering", "grocery_bulk", "travel_lodging", "fees_dues_govt", "print_merch_awards"],
+           "_history": "grocery 8, restaurant 2"},
+    "11": {"name": "Sponsorship / Donation",
+           "expected": ["fees_dues_govt"],
+           "_history": "no card purchases"},
+    "12": {"name": "Overhead",
+           "expected": ["software_telecom", "fees_dues_govt", "online_marketplace"],
+           "_history": "software 20, fees 2, online 1"},
+    "13": {"name": "Merch",
+           "expected": ["print_merch_awards", "online_marketplace"],
+           "_history": "print 2"},
+    "14": {"name": "Road Trip",
+           "expected": ["travel_lodging", "fuel_convenience", "restaurant_catering", "grocery_bulk", "entertainment_activity"],
+           "_history": "no card purchases yet"},
+    "15": {"name": "Technology",
+           "expected": ["software_telecom", "online_marketplace"],
+           "_history": "software 15, online 1"},
+    "16": {"name": "Passport",
+           "expected": ["grocery_bulk", "restaurant_catering", "craft_party", "print_merch_awards", "entertainment_activity", "sporting_goods"],
+           "light_review": true,
+           "_why": "Passport runs activities and its spending is already tightly controlled by the people running it (treasurer, 2026-10-02). light_review: only the org-wide checks (everyone, receipts, unknown cards) apply; no 'isn't usual' notes.",
+           "_history": "grocery 10, restaurant 4, alcohol 1, craft 1, print 1, sporting 1"},
+    "18": {"name": "Formal",
+           "expected": ["bar_venue", "restaurant_catering", "entertainment_activity", "print_merch_awards", "craft_party", "alcohol_retail"],
+           "_history": "bar 1"}
+  }
+}
