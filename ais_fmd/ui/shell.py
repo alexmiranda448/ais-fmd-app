@@ -13,21 +13,36 @@ down to once per session per title, and is now gone entirely: a title that
 types itself is the single loudest tell that a piece of software was generated
 rather than designed, and it bought nothing that the CSS entrance animation in
 `theme` does not do in 400ms without blocking the script.
+
+PEBBLE. Every header, card and metric fades and rises once via CSS
+(ui/theme.py). Helpers added for it:
+
+  card(name, order=)    a white rounded card; order sets the entrance delay
+  heading(title, right) the title row inside a card
+  legend(items)         dot-legend HTML for a heading
+  html(markup)          inline HTML with dollar signs made LaTeX-safe
+  hub(key, views)       several existing view files under one nav entry
+  chart(..., reveal=)   charts that wipe in once on first render
+  metric(..., bars=)    same-day values for recent terms, drawn in the tile
 """
 
 from __future__ import annotations
 
-from typing import Iterable
-
 import re
+import runpy
+from pathlib import Path
+from typing import Iterable
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from .. import settings
+from .. import auth, settings
 from ..domain.money import format_currency, format_delta
 from . import theme
+
+_HUB_PENDING_KEY = "_ais_hub_pending"
+_VIEWS_DIR = Path(__file__).resolve().parent.parent / "views"
 
 
 def bootstrap(page_title: str = "UF AIS Financial Management") -> None:
@@ -39,9 +54,12 @@ def bootstrap(page_title: str = "UF AIS Financial Management") -> None:
         # macOS and Android -- and reads as a placeholder either way.
         page_icon=":material/account_balance:",
         layout="wide",
-        initial_sidebar_state="expanded",
+        # Pebble navigates from the top bar. The sidebar only holds the role
+        # switcher, sandbox controls and sign-out, so it starts closed.
+        initial_sidebar_state="collapsed",
     )
-    st.markdown(theme.app_css(theme.active()), unsafe_allow_html=True)
+    theme.register()
+    st.markdown(theme.APP_CSS, unsafe_allow_html=True)
 
 
 def environment_banner() -> None:
@@ -56,10 +74,89 @@ def environment_banner() -> None:
 
 
 def page_header(title: str, subtitle: str = "") -> None:
-    st.markdown(f'<div class="ais-head"><h1>{title}</h1></div>', unsafe_allow_html=True)
-    if subtitle:
-        st.markdown(f'<div class="ais-head"><p>{subtitle}</p></div>', unsafe_allow_html=True)
+    """
+    Title and one line of context.
+
+    When the page is running inside a hub, the hub's view switcher renders
+    here, beside the title, so every merged page gets it without changes.
+    """
+    pending = st.session_state.pop(_HUB_PENDING_KEY, None)
+    if pending:
+        title_column, switch_column = st.columns([3, 2], vertical_alignment="bottom")
+    else:
+        title_column, switch_column = st.container(), None
+    with title_column:
+        body = f"<h1>{title}</h1>" + (f"<p>{subtitle}</p>" if subtitle else "")
+        html(f'<div class="ais-head">{body}</div>')
+    if pending and switch_column is not None:
+        key, labels = pending
+        with switch_column:
+            st.segmented_control(
+                "View", labels, key=key, selection_mode="single", label_visibility="collapsed"
+            )
     st.markdown('<hr class="ais-rule" />', unsafe_allow_html=True)
+
+
+def html(markup: str) -> None:
+    """
+    Render inline HTML. Dollar signs become `&#36;`, which the browser shows
+    as `$` but Streamlit's math parser never sees -- the HTML-safe form of
+    `money_safe`.
+    """
+    st.markdown(markup.replace("$", "&#36;"), unsafe_allow_html=True)
+
+
+def card(name: str, *, order: int = 1, hero: bool = False):
+    """
+    A Pebble card: white, 24px radius, soft shadow. `hero=True` fills it orange
+    -- use once per page, for the figure that matters most. `order` (1-9) is
+    the reading-order position; cards rise in that sequence.
+
+        with shell.card("runway", order=1):
+            ...
+    """
+    prefix = "hero" if hero else "card"
+    return st.container(key=f"{prefix}-o{min(max(int(order), 1), 9)}-{name}")
+
+
+def heading(title: str, right: str = "") -> None:
+    """Card title row, with optional right-aligned HTML (a pill, a legend)."""
+    html(f'<div class="ais-card-head"><span>{title}</span>{right}</div>')
+
+
+def legend(items: list[tuple[str, str]]) -> str:
+    """Dot legend HTML for `heading(right=...)`. items: (label, colour)."""
+    dots = "".join(f'<span><i style="background:{color}"></i>{label}</span>' for label, color in items)
+    return f'<span class="ais-legend">{dots}</span>'
+
+
+def hub(key: str, views: list[tuple[str, str, "auth.Role"]]) -> None:
+    """
+    Several existing pages under one navigation entry.
+
+    CONSOLIDATION. Sixteen nav entries came down to eleven without rewriting
+    the merged pages: each stays its own file, owned by whoever owned it, and
+    the hub runs exactly one of them per rerun. Running one (rather than all
+    of them inside `st.tabs`) matters because the views call `st.stop()` for
+    empty states -- inside tabs, the first view's empty state would blank
+    every later tab.
+
+    `views` is (label, file name in ais_fmd/views, minimum role). Views the
+    user cannot open are left out of the switcher; if none are left, the
+    strictest role's gate renders its usual warning.
+    """
+    identity = auth.current_user()
+    allowed = [view for view in views if identity.can(view[2])]
+    if not allowed:
+        auth.require(max(view[2] for view in views))
+        return
+    labels = [label for label, _, _ in allowed]
+    if st.session_state.get(key) not in labels:
+        st.session_state[key] = labels[0]
+    choice = st.session_state[key]
+    st.session_state[_HUB_PENDING_KEY] = (key, labels) if len(labels) > 1 else None
+    file_name = next(file for label, file, _ in allowed if label == choice)
+    runpy.run_path(str(_VIEWS_DIR / file_name), run_name="__main__")
 
 
 def money_safe(text: str) -> str:
@@ -126,6 +223,7 @@ def metric(
     currency: bool = True,
     trend: list[float] | None = None,
     color: str | None = None,
+    bars: list[float] | None = None,
 ) -> None:
     """
     One KPI.
@@ -135,6 +233,14 @@ def metric(
 
     FINDING F11: `inverse=True` on expenses, so spending more than last semester
     reads as negative rather than being coloured as an improvement.
+
+    PEBBLE: `bars` draws the same-day-of-term value for recent terms as a
+    small bar chart under the figure: past terms faded, this term solid in
+    `color` (ink by default; pass white inside a hero card).
+
+    Not `st.metric(chart_data=...)`, though Streamlit 1.62 has it: its bars
+    take the delta's red/green and sit on a filled panel, and cannot be given
+    per-bar colours, so they could not follow "past terms grey, this term ink".
     """
     # A string is already formatted -- a percentage, a ratio, a count with a
     # unit. Passing one through `f"{value:,}"` raises, so a caller with anything
@@ -158,6 +264,8 @@ def metric(
         delta=display_delta,
         delta_color="inverse" if inverse else "normal",
     )
+    if bars:
+        trend = [float(v or 0) for v in bars]
     if trend:
         from . import charts
 
@@ -168,7 +276,7 @@ def metric(
         # Two of the four tiles were saying something false. A caller that
         # knows what the figure means passes `color`; the old behaviour stays
         # as the fallback for callers that do not.
-        spark_color = color or (theme.active().over if inverse else theme.active().accent)
+        spark_color = color or theme.INK
         container.plotly_chart(
             _transparent(charts.sparkline(trend, color=spark_color)),
             width="stretch",
@@ -194,6 +302,7 @@ def metric_row(specs: Iterable[dict]) -> None:
             currency=spec.get("currency", True),
             trend=spec.get("trend"),
             color=spec.get("color"),
+            bars=spec.get("bars"),
         )
 
 
@@ -296,10 +405,9 @@ def _transparent(figure: go.Figure) -> go.Figure:
     Setting the values on the figure's own layout, rather than only on the
     template, is what survives that merge.
 
-    The template is attached here too, per figure, rather than installed as
-    `pio.templates.default`. That default is process-global, and with a light
-    and a dark palette in play a global default is a race: whichever session
-    rendered last would decide what every other session's charts looked like.
+    The template is attached here too, per figure. Pebble has one palette, so
+    `theme.register()` also installs it as the Plotly default; attaching it
+    per figure keeps charts right even where that default was not set.
     """
     return figure.update_layout(
         template=theme.build_template(),
@@ -308,7 +416,7 @@ def _transparent(figure: go.Figure) -> go.Figure:
     )
 
 
-def chart(figure: go.Figure, *, key: str | None = None) -> None:
+def chart(figure: go.Figure, *, key: str | None = None, reveal: str | None = None) -> None:
     """
     Render a Plotly figure with consistent options.
 
@@ -320,14 +428,25 @@ def chart(figure: go.Figure, *, key: str | None = None) -> None:
     every axis in the app was brighter than its data. Passing `theme=None`
     hands the figure back to its own template, which is the whole point of
     registering one.
+
+    PEBBLE: `reveal="left"` wipes the chart in from the left (lines drawing
+    in); `reveal="up"` grows it from the base (bars). Plays once, on first
+    render. The mode bar is hidden.
     """
-    st.plotly_chart(
-        _transparent(figure),
-        width="stretch",
-        theme=None,
-        config={"displaylogo": False, "modeBarButtonsToRemove": ["lasso2d", "select2d"]},
-        key=key,
-    )
+    def _draw() -> None:
+        st.plotly_chart(
+            _transparent(figure),
+            width="stretch",
+            theme=None,
+            config={"displayModeBar": False, "displaylogo": False},
+            key=key,
+        )
+
+    if reveal in {"left", "up"}:
+        with st.container(key=f"reveal-{reveal}-{key or id(figure)}"):
+            _draw()
+    else:
+        _draw()
 
 
 def dataframe(df: pd.DataFrame, **kwargs) -> None:
@@ -336,73 +455,8 @@ def dataframe(df: pd.DataFrame, **kwargs) -> None:
     st.dataframe(df, width="stretch", **kwargs)
 
 
-# Streamlit persists the viewer's theme choice in browser localStorage under
-# this key. It is an internal detail of the frontend bundle, not a public API,
-# so `tests/test_theme_switch.py` re-derives both the key template and the
-# version number from the installed Streamlit build and fails if either moves.
-# That turns a silent no-op button into a red test on upgrade.
-_THEME_KEY_TEMPLATE = "stActiveTheme-{pathname}-v{version}"
-_THEME_STORAGE_VERSION = 2
-
-
-def mode_switch() -> None:
-    """
-    A button that swaps light and dark.
-
-    There is no Python API for this. `st.context.theme` is read-only, and its
-    own docstring warns that the value is unreliable during a change -- so the
-    only way to move the whole app, Streamlit's own chrome included, is to
-    write the preference the frontend reads and reload.
-
-    That last part matters more than it looks. `st.dataframe` renders through a
-    canvas grid that takes its colours from Streamlit's theme, not from the app
-    stylesheet, so a CSS-only light mode would leave every table on the
-    Dashboard sitting dark on a white page. Driving Streamlit's real theme is
-    what keeps the tables, the widgets and the drawing in agreement.
-
-    The cost is a page reload, which is why the label is a plain switch and not
-    a live toggle. If a future Streamlit changes the storage key, the button
-    stops working rather than breaking anything -- and the guard test fails
-    first, at upgrade time. The Settings menu remains the fallback either way.
-    """
-    palette = theme.active()
-    going_light = palette.name == "dark"
-    label = "Light mode" if going_light else "Dark mode"
-
-    with st.sidebar:
-        if st.button(label, width="stretch", key="_ais_mode_switch"):
-            _write_theme_preference("Light" if going_light else "Dark")
-
-
-def _write_theme_preference(name: str) -> None:
-    """
-    Set the frontend's stored theme and reload.
-
-    Runs inside a zero-height component iframe, which is the only place an app
-    can execute script -- `st.markdown` strips it. The iframe is same-origin
-    with the app, so `window.parent` is reachable. Everything is wrapped in a
-    try/catch: if the key ever stops being the one Streamlit reads, the button
-    quietly does nothing instead of throwing into the console on every run.
-
-    A reload starts a fresh session, so the button's state does not survive to
-    fire this a second time -- there is no loop to guard against.
-    """
-    import streamlit.components.v1 as components
-
-    components.html(
-        f"""
-        <script>
-          try {{
-            var w = window.parent;
-            var key = "stActiveTheme-" + w.location.pathname
-                    + "-v{_THEME_STORAGE_VERSION}";
-            w.localStorage.setItem(key, JSON.stringify({name!r}));
-            w.location.reload();
-          }} catch (e) {{}}
-        </script>
-        """.replace("'", '"'),
-        height=0,
-    )
+# REMOVED (Pebble): `mode_switch()` and its localStorage writer. Pebble is a
+# single light palette, so there is no second mode to switch to.
 
 
 def sidebar_footer() -> None:
@@ -417,8 +471,6 @@ def sidebar_footer() -> None:
     # Absent in the sandbox on purpose -- there the identity is fabricated and
     # the sidebar role switcher is how you change it.
     if not settings.is_sandbox():
-        from .. import auth
-
         identity = st.session_state.get(auth.SESSION_KEY)
         if identity is not None:
             st.sidebar.caption(f"Signed in as **{identity.email}**")
@@ -430,4 +482,3 @@ def sidebar_footer() -> None:
     st.sidebar.caption(f"Mode: **{mode}**")
     if settings.is_sandbox():
         st.sidebar.caption("Local SQLite. No network, no real money.")
-    st.sidebar.caption(f"Drawing: **{theme.active().name.title()}**")

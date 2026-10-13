@@ -1,30 +1,28 @@
 """
 Chart factories.
 
-Every chart the app draws comes from here, so they cannot drift apart. The
-replacements for the original charts:
+Every chart the app draws comes from here, so they cannot drift apart.
 
-  * Two donuts (income / expenses) -> sorted horizontal bars. Both were ranking
-    questions, and a donut is the weakest common mark for ranking; at six to
-    eight slices the labels also collided.
-  * Continuous blue % ramp -> bullet chart with semantic colour. The original
-    put 40% spent and 110% spent on the same scale, so the state that needs
-    attention did not stand out.
-  * Bare metric numbers -> KPI values with sparklines, so a figure arrives with
-    its own trend rather than a single delta.
-  * New: a waterfall, which is the clearest way to show where a semester's
-    money actually went.
+PEBBLE CHART PLAN. Home and Dashboard never share a chart:
 
-Marks are drawn as wireframe: a bright hairline edge over a low-opacity fill,
-rather than a solid block of colour. On a black ground a solid fill is a hole
-punched in the page, while an outline reads as something drawn on it -- and at
-these saturations, six outlined bars stay distinguishable where six filled ones
-merge into a single mass.
+  Home (now and next, from today forward)
+    cash_runway       will the balance stay above the reserve through term end?
+    spend_pace        are we spending faster than the budget allows?
+    committee_pace    which committees are ahead of the calendar, and when do they run out?
+    dues_curve        are members paying faster than the same term last year?
+
+  Dashboard (analysis, from today backward)
+    KPI mini bars     each figure at the same day of the last five terms (st.metric chart_data)
+    waterfall         which income sources and committees produced the net
+    budget_health     % used against % of term elapsed, all committees
+    net_by_week       cumulative net against the last two equivalent terms
+
+Conventions: ink for this term, greys for past terms, orange only for the one
+figure that matters (projection, over budget, net). Rounded bars come from the
+template's `barcornerradius`.
 """
 
 from __future__ import annotations
-
-import textwrap
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -33,11 +31,6 @@ from . import theme
 
 _HEIGHT_PER_ROW = 34
 _MIN_HEIGHT = 220
-
-# Fill opacity behind an outlined mark. High enough to read as a body, low
-# enough that the edge stays the brightest part of the shape.
-_FILL = 0.16
-_FILL_SOFT = 0.07
 
 
 def _height(rows: int, *, per_row: int = _HEIGHT_PER_ROW, base: int = 90) -> int:
@@ -50,118 +43,375 @@ def _translucent(hex_color: str, alpha: float) -> str:
     return f"rgba({r},{g},{b},{alpha})"
 
 
-def _wire(color: str, *, fill: float = _FILL, width: float = 1.4) -> dict:
-    """A wireframe mark: translucent body, bright hairline edge."""
-    fill = min(fill * theme.active().fill_scale, 0.6)
-    return dict(color=_translucent(color, fill), line=dict(color=color, width=width))
+def _short_money(value: float) -> str:
+    sign = "−" if value < 0 else ""
+    value = abs(value)
+    if value >= 1000:
+        return f"{sign}${value / 1000:.1f}k"
+    return f"{sign}${value:,.0f}"
 
 
-def _wire_many(colors: list[str], *, fill: float = _FILL, width: float = 1.4) -> dict:
-    """The same, per-point, for a series whose colour varies by status."""
-    fill = min(fill * theme.active().fill_scale, 0.6)
+def _day_axis(start: pd.Timestamp, length: int) -> dict:
+    """Days since term start on the axis, labelled with month names."""
+    values, text = [], []
+    for day in range(0, length + 1):
+        date = start + pd.Timedelta(days=day)
+        if date.day == 1:
+            values.append(day)
+            text.append(f"{date:%b}")
     return dict(
-        color=[_translucent(c, fill) for c in colors],
-        line=dict(color=colors, width=width),
+        tickmode="array", tickvals=values, ticktext=text, range=[0, length],
+        showgrid=False, title=None, fixedrange=True,
     )
 
 
-def _wrap(label: str, width: int = 10) -> str:
-    """
-    Break a long category label onto its own lines.
-
-    FINDING (visual). The waterfall's committee names ran to twenty-plus
-    characters -- "Professional Development", "Corporate Relations" -- against
-    ten categories on a 480px axis. Plotly's answer is to rotate them, so the
-    page ended up with a row of labels slanted at 30 degrees, colliding with
-    each other and with the axis title. Wrapping at the space and keeping the
-    labels horizontal fixes the cause rather than the symptom.
-    """
-    return "<br>".join(textwrap.wrap(str(label), width=width, break_long_words=False)) or str(label)
+def _money_axis(**extra) -> dict:
+    """A currency axis. `extra` overrides the defaults (e.g. nticks=3)."""
+    return {**dict(tickprefix="$", separatethousands=True, title=None, fixedrange=True, nticks=5), **extra}
 
 
 def empty_figure(message: str) -> go.Figure:
     """A chart-shaped placeholder, so layout does not jump when data is absent."""
-    p = theme.active()
     figure = go.Figure()
     figure.add_annotation(
-        text=message,
-        showarrow=False,
-        font=dict(family=theme._MONO, color=p.ink_mute, size=11),
-        xref="paper",
-        yref="paper",
-        x=0.5,
-        y=0.5,
+        text=message, showarrow=False, font=dict(color=theme.INK_MUTE, size=13),
+        xref="paper", yref="paper", x=0.5, y=0.5,
+    )
+    figure.update_layout(height=_MIN_HEIGHT, xaxis=dict(visible=False), yaxis=dict(visible=False))
+    return figure
+
+
+# --- Home --------------------------------------------------------------------
+
+def cash_runway(runway, clock, *, reserve: float) -> go.Figure:
+    """Actual balance to today (ink), projected range to term end (orange), reserve line."""
+    if runway is None or runway.actual.empty:
+        return empty_figure("No balance history yet.")
+
+    figure = go.Figure()
+    projected = runway.projected
+    if len(projected) > 1:
+        figure.add_trace(go.Scatter(
+            x=projected["Day"], y=projected["High"], mode="lines", line=dict(width=0),
+            hoverinfo="skip", showlegend=False,
+        ))
+        figure.add_trace(go.Scatter(
+            x=projected["Day"], y=projected["Low"], mode="lines", line=dict(width=0),
+            fill="tonexty", fillcolor=theme.ACCENT_TINT, name="Likely range", hoverinfo="skip",
+        ))
+        figure.add_trace(go.Scatter(
+            x=projected["Day"], y=projected["Mid"], mode="lines", name="Projected",
+            line=dict(color=theme.ACCENT, width=2.5, dash="dash"),
+            hovertemplate="Day %{x}<br>$%{y:,.0f}<extra>Projected</extra>",
+        ))
+        figure.add_trace(go.Scatter(
+            x=[clock.length], y=[runway.end_mid], mode="markers+text", showlegend=False,
+            marker=dict(color=theme.ACCENT, size=11, line=dict(color="#fff", width=2.5)),
+            text=[f"${runway.end_mid:,.0f}"], textposition="middle right",
+            textfont=dict(color=theme.ACCENT_DIM, size=14), hoverinfo="skip", cliponaxis=False,
+        ))
+
+    actual = runway.actual
+    figure.add_trace(go.Scatter(
+        x=actual["Day"], y=actual["Balance"], mode="lines", name="Actual",
+        line=dict(color=theme.INK, width=2.5), fill="tozeroy",
+        fillcolor=_translucent(theme.INK, 0.05),
+        hovertemplate="Day %{x}<br>$%{y:,.0f}<extra>Balance</extra>",
+    ))
+    figure.add_trace(go.Scatter(
+        x=[clock.day], y=[runway.today_balance], mode="markers", showlegend=False,
+        marker=dict(color=theme.INK, size=11, line=dict(color="#fff", width=2.5)), hoverinfo="skip",
+    ))
+    if not clock.finished:
+        figure.add_vline(
+            x=clock.day, line=dict(color=theme.INK, width=1, dash="dot"),
+            annotation_text="Today", annotation_position="top", annotation_font=dict(color=theme.INK, size=12),
+        )
+    figure.add_hline(
+        y=reserve, line=dict(color=theme.ACCENT, width=1.5, dash="dot"), opacity=0.7,
+        annotation_text=f"Reserve {_short_money(reserve)}", annotation_position="bottom right",
+        annotation_font=dict(color=theme.ACCENT_DIM, size=12),
     )
     figure.update_layout(
-        height=_MIN_HEIGHT,
-        xaxis=dict(visible=False),
-        yaxis=dict(visible=False),
+        height=300, margin=dict(l=8, r=70, t=28, b=8),
+        xaxis=_day_axis(clock.start, clock.length), yaxis=_money_axis(rangemode="tozero"),
+        legend=dict(x=1, xanchor="right", y=1.08),
     )
     return figure
 
 
-def budget_bullet(df: pd.DataFrame) -> go.Figure:
+def spend_pace(actual: pd.DataFrame, prior: pd.DataFrame | None, clock, *, budget: float,
+               prior_label: str | None = None) -> go.Figure:
+    """Cumulative spending against a straight budget-pace line and last year's curve."""
+    if actual.empty:
+        return empty_figure("No spending yet.")
+    figure = go.Figure()
+    if prior is not None and not prior.empty and prior_label:
+        figure.add_trace(go.Scatter(
+            x=prior["Day"], y=prior["Value"], mode="lines", name=prior_label,
+            line=dict(color=theme.HISTORY[1], width=2),
+            hovertemplate="Day %{x}<br>$%{y:,.0f}<extra>" + prior_label + "</extra>",
+        ))
+    if budget > 0:
+        figure.add_trace(go.Scatter(
+            x=[0, clock.length], y=[0, budget], mode="lines", name="Budget pace",
+            line=dict(color=theme.INK_MUTE, width=1.5, dash="dash"), hoverinfo="skip",
+        ))
+    figure.add_trace(go.Scatter(
+        x=actual["Day"], y=actual["Value"], mode="lines", name="This term",
+        line=dict(color=theme.INK, width=2.5),
+        hovertemplate="Day %{x}<br>$%{y:,.0f}<extra>This term</extra>",
+    ))
+    last = actual.iloc[-1]
+    figure.add_trace(go.Scatter(
+        x=[last["Day"]], y=[last["Value"]], mode="markers+text", showlegend=False,
+        marker=dict(color=theme.INK, size=9, line=dict(color="#fff", width=2)),
+        text=[f"${last['Value']:,.0f}"], textposition="top left",
+        textfont=dict(color=theme.INK, size=13), hoverinfo="skip",
+    ))
+    figure.update_layout(
+        height=230, xaxis=_day_axis(clock.start, clock.length), yaxis=_money_axis(rangemode="tozero"),
+        legend=dict(y=-0.28, yanchor="top"), margin=dict(l=8, r=8, t=8, b=8),
+    )
+    return figure
+
+
+def committee_pace(df: pd.DataFrame, clock, *, rows: int = 3) -> go.Figure:
     """
-    Budget health as a bullet chart.
-
-    Each committee is one row: a hollow bar for the allocation -- the envelope
-    the committee is working inside -- and a solid-edged bar for actual spend,
-    coloured by status. Over-budget reads instantly because it is a different
-    colour and it breaks out of its envelope, not merely because it is longer.
-
-    The separate "Allocation" tick trace the original drew is gone: the hollow
-    bar already terminates exactly at the allocation, so the tick was a second
-    mark saying the same thing in the same place.
+    Pace dots: a grey dot where the committee should be (% of term elapsed), a
+    coloured dot where it is (% of budget used), joined by a segment.
     """
     if df.empty:
-        return empty_figure("No budget data for this selection.")
-
-    p = theme.active()
-    data = df.sort_values("Spent", ascending=True)
+        return empty_figure("No committee budgets set for this term.")
+    data = df.head(rows).iloc[::-1]
+    expected = clock.fraction * 100
     names = data["Committee_Name"].tolist()
-    statuses = [p.status_colors.get(s, p.unbudgeted) for s in data["Status"]]
+    colors = [theme.STATUS_COLORS.get(status, theme.ON_TRACK) for status in data["Status"]]
+
+    xs, ys = [], []
+    for name, used in zip(names, data["Used"]):
+        xs += [expected, used, None]
+        ys += [name, name, None]
+
+    labels = []
+    for used, runs_out in zip(data["Used"], data["Runs out"]):
+        if used > 100:
+            labels.append(f"{used:.0f}% · over")
+        elif runs_out is not None and not pd.isna(runs_out):
+            labels.append(f"{used:.0f}% · out {pd.Timestamp(runs_out):%b %d}")
+        else:
+            labels.append(f"{used:.0f}%")
 
     figure = go.Figure()
-
-    figure.add_trace(
-        go.Bar(
-            name="Allocated",
-            y=names,
-            x=data["Budget"],
-            orientation="h",
-            marker=dict(
-                color="rgba(0,0,0,0)",
-                line=dict(color=p.line_edge, width=1),
-            ),
-            width=0.66,
-            hovertemplate="<b>%{y}</b><br>Allocated  $%{x:,.2f}<extra></extra>",
-        )
-    )
-
-    figure.add_trace(
-        go.Bar(
-            name="Spent",
-            y=names,
-            x=data["Spent"],
-            orientation="h",
-            marker=_wire_many(statuses, fill=0.22, width=1.4),
-            width=0.34,
-            customdata=data[["% Spent", "Budget", "Status"]].values,
-            hovertemplate=(
-                "<b>%{y}</b><br>Spent      $%{x:,.2f}<br>"
-                "Allocated  $%{customdata[1]:,.2f}<br>"
-                "Used       %{customdata[0]:.1f}%<br>"
-                "Status     %{customdata[2]}<extra></extra>"
-            ),
-        )
-    )
-
+    figure.add_trace(go.Scatter(
+        x=xs, y=ys, mode="lines", line=dict(color=theme.GRID, width=8), hoverinfo="skip", showlegend=False,
+    ))
+    figure.add_trace(go.Scatter(
+        x=[expected] * len(names), y=names, mode="markers", showlegend=False,
+        marker=dict(color=theme.INK, symbol="line-ns", size=18, line=dict(color=theme.INK, width=2)),
+        hovertemplate="Term %{x:.0f}% through<extra></extra>",
+    ))
+    figure.add_trace(go.Scatter(
+        x=data["Used"], y=names, mode="markers+text", showlegend=False,
+        marker=dict(color=colors, size=15, line=dict(color="#fff", width=3)),
+        text=labels, textposition="middle right", textfont=dict(color=theme.INK, size=12.5),
+        hovertemplate="<b>%{y}</b><br>%{x:.0f}% of budget used<extra></extra>", cliponaxis=False,
+    ))
+    top = max(120.0, float(data["Used"].max()) + 10)
     figure.update_layout(
-        barmode="overlay",
-        height=_height(len(data)),
-        xaxis=dict(title=None, tickprefix="$", separatethousands=True),
-        yaxis=dict(title=None, showgrid=False, ticks="", linecolor=p.line),
-        legend=dict(orientation="h", y=1.04, x=0),
+        height=max(170, 60 + rows * 46), margin=dict(l=8, r=110, t=8, b=8),
+        xaxis=dict(range=[0, top], ticksuffix="%", tickvals=[0, round(expected), 100],
+                   showgrid=False, fixedrange=True),
+        yaxis=dict(showgrid=False, fixedrange=True, tickfont=dict(color=theme.INK, size=13)),
+    )
+    return figure
+
+
+def dues_curve(current: pd.DataFrame, prior: pd.DataFrame | None, clock, *,
+               prior_label: str | None = None) -> go.Figure:
+    """Cumulative dues collected by day, this term against the same term last year."""
+    if current.empty and (prior is None or prior.empty):
+        return empty_figure("No dues payments yet.")
+    figure = go.Figure()
+    if prior is not None and not prior.empty and prior_label:
+        figure.add_trace(go.Scatter(
+            x=prior["Day"], y=prior["Cumulative"], mode="lines", line_shape="hv", name=prior_label,
+            line=dict(color=theme.HISTORY[1], width=2),
+            hovertemplate="Day %{x}<br>$%{y:,.0f}<extra>" + prior_label + "</extra>",
+        ))
+    if not current.empty:
+        x = list(current["Day"]) + [clock.day]
+        y = list(current["Cumulative"]) + [float(current["Cumulative"].iloc[-1])]
+        figure.add_trace(go.Scatter(
+            x=x, y=y, mode="lines", line_shape="hv", name="This term",
+            line=dict(color=theme.INK, width=2.5), fill="tozeroy",
+            fillcolor=_translucent(theme.INK, 0.05),
+            hovertemplate="Day %{x}<br>$%{y:,.0f}<extra>This term</extra>",
+        ))
+    figure.update_layout(
+        height=170, margin=dict(l=4, r=4, t=4, b=4), showlegend=False,
+        xaxis=_day_axis(clock.start, clock.length), yaxis=_money_axis(rangemode="tozero", nticks=3),
+    )
+    return figure
+
+
+# --- Dashboard ---------------------------------------------------------------
+
+def budget_health(df: pd.DataFrame, clock) -> go.Figure:
+    """% of budget used per committee, with a marker for % of term elapsed."""
+    if df.empty:
+        return empty_figure("No budget data for this selection.")
+    data = df.sort_values("Used", ascending=True)
+    shown = data["Used"].clip(upper=130)
+    colors = [theme.STATUS_COLORS.get(status, theme.ON_TRACK) for status in data["Status"]]
+    text = [
+        f"{used:.0f}%  ·  ${spent:,.0f} of ${budget:,.0f}"
+        for used, spent, budget in zip(data["Used"], data["Spent"], data["Budget"])
+    ]
+    runs = [
+        "Over budget" if used > 100 else (f"Runs out {pd.Timestamp(r):%b %d}" if r is not None and not pd.isna(r) else "Lasts the term")
+        for used, r in zip(data["Used"], data["Runs out"])
+    ]
+    figure = go.Figure(go.Bar(
+        y=data["Committee_Name"], x=shown, orientation="h", marker=dict(color=colors),
+        width=0.5, text=text, textposition="outside", textfont=dict(color=theme.INK_SOFT, size=12),
+        customdata=runs, cliponaxis=False,
+        hovertemplate="<b>%{y}</b><br>%{x:.0f}% used<br>%{customdata}<extra></extra>",
+    ))
+    expected = clock.fraction * 100
+    figure.add_vline(x=100, line=dict(color=theme.GRID, width=1.5))
+    figure.add_vline(
+        x=expected, line=dict(color=theme.INK, width=1.5),
+        annotation_text=f"Term {expected:.0f}%", annotation_position="top",
+        annotation_font=dict(color=theme.INK, size=12),
+    )
+    figure.update_layout(
+        height=_height(len(data), per_row=30, base=60), showlegend=False,
+        margin=dict(l=8, r=150, t=28, b=8),
+        xaxis=dict(range=[0, 130], ticksuffix="%", tickvals=[0, 50, 100], showgrid=False, fixedrange=True),
+        yaxis=dict(showgrid=False, fixedrange=True, tickfont=dict(color=theme.INK_SOFT, size=13)),
+    )
+    return figure
+
+
+def waterfall(
+    labels: list[str],
+    values: list[float],
+    measures: list[str],
+    *,
+    title: str | None = None,
+) -> go.Figure:
+    """Income steps up in ink, spending steps down in grey, the net in orange."""
+    if not labels:
+        return empty_figure("Not enough data for a waterfall.")
+    text = [
+        _short_money(v) if m != "total" else "" for v, m in zip(values, measures)
+    ]
+    # Bars are placed by position, not by label. A label can repeat -- "Formal"
+    # is both an income purpose and a committee -- and Plotly stacks repeated
+    # category labels into one slot, which drew a spending step in the middle
+    # of the income run.
+    positions = list(range(len(labels)))
+    figure = go.Figure(go.Waterfall(
+        orientation="v", measure=measures, x=positions, y=values,
+        text=text, textposition="outside", textfont=dict(color=theme.INK_SOFT, size=12),
+        connector=dict(line=dict(color=theme.ON_TRACK, width=1, dash="dot")),
+        increasing=dict(marker=dict(color=theme.INK)),
+        decreasing=dict(marker=dict(color=theme.ON_TRACK)),
+        totals=dict(marker=dict(color=theme.ACCENT)),
+        customdata=labels,
+        hovertemplate="<b>%{customdata}</b><br>$%{y:,.2f}<extra></extra>",
+        cliponaxis=False,
+    ))
+    figure.update_layout(
+        height=330, showlegend=False,
+        yaxis=_money_axis(),
+        xaxis=dict(
+            title=None, fixedrange=True, tickfont=dict(size=11.5),
+            tickmode="array", tickvals=positions, ticktext=labels,
+        ),
+    )
+    if title:
+        figure.update_layout(title=title)
+    return figure
+
+
+def flow_waterfall(steps: list[tuple[str, float, str]]) -> go.Figure:
+    """`waterfall` fed from `domain.pace.flow_steps`."""
+    if not steps:
+        return empty_figure("No transactions in this selection.")
+    labels = [label for label, _, _ in steps]
+    values = [0.0 if kind == "net" else value for _, value, kind in steps]
+    measures = ["total" if kind == "net" else "relative" for _, _, kind in steps]
+    figure = waterfall(labels, values, measures)
+    net = steps[-1][1]
+    figure.add_annotation(
+        x=len(labels) - 1, y=max(net, 0), text=_short_money(net), showarrow=False, yshift=12,
+        font=dict(color=theme.ACCENT_DIM, size=13),
+    )
+    return figure
+
+
+def net_by_week(series: list[tuple[str, pd.DataFrame]], clock) -> go.Figure:
+    """Cumulative net by day. First series is this term (ink); the rest are past terms (greys)."""
+    if not series or series[0][1].empty:
+        return empty_figure("No transactions yet.")
+    figure = go.Figure()
+    for index, (label, frame) in reversed(list(enumerate(series))):
+        if frame.empty:
+            continue
+        current = index == 0
+        color = theme.INK if current else theme.HISTORY[min(index - 1, len(theme.HISTORY) - 1)]
+        figure.add_trace(go.Scatter(
+            x=frame["Day"], y=frame["Value"], mode="lines", name=label,
+            line=dict(color=color, width=2.5 if current else 2),
+            hovertemplate="Day %{x}<br>$%{y:,.0f}<extra>" + label + "</extra>",
+        ))
+        end = frame.iloc[-1]
+        figure.add_trace(go.Scatter(
+            x=[end["Day"]], y=[end["Value"]], mode="markers+text" if current else "text",
+            marker=dict(color=color, size=9, line=dict(color="#fff", width=2)),
+            text=[f"{label} {_short_money(end['Value'])}"], textposition="middle right",
+            textfont=dict(color=theme.INK if current else theme.INK_MUTE, size=12),
+            showlegend=False, hoverinfo="skip", cliponaxis=False,
+        ))
+    length = max(int(frame["Day"].max()) for _, frame in series if not frame.empty)
+    if not clock.finished:
+        figure.add_vline(x=clock.day, line=dict(color=theme.INK, width=1, dash="dot"))
+    figure.add_hline(y=0, line=dict(color=theme.ON_TRACK, width=1))
+    figure.update_layout(
+        height=260, margin=dict(l=8, r=110, t=8, b=8), showlegend=False,
+        xaxis=_day_axis(clock.start, max(length, clock.length)), yaxis=_money_axis(),
+    )
+    return figure
+
+
+# --- Kept from the dark theme, restyled by the template ----------------------
+
+def budget_bullet(df: pd.DataFrame) -> go.Figure:
+    """Budget health in dollars: allocation (light) behind spend (by status)."""
+    if df.empty:
+        return empty_figure("No budget data for this selection.")
+    data = df.sort_values("Spent", ascending=True)
+    names = data["Committee_Name"].tolist()
+    figure = go.Figure()
+    figure.add_trace(go.Bar(
+        name="Budget", y=names, x=data["Budget"], orientation="h",
+        marker=dict(color=theme.BUDGET), width=0.62,
+        hovertemplate="<b>%{y}</b><br>Budget: $%{x:,.2f}<extra></extra>",
+    ))
+    figure.add_trace(go.Bar(
+        name="Spent", y=names, x=data["Spent"], orientation="h",
+        marker=dict(color=[theme.STATUS_COLORS.get(s, theme.UNBUDGETED) for s in data["Status"]]),
+        width=0.3, customdata=data[["% Spent", "Budget", "Status"]].values,
+        hovertemplate=(
+            "<b>%{y}</b><br>Spent: $%{x:,.2f}<br>Budget: $%{customdata[1]:,.2f}<br>"
+            "Used: %{customdata[0]:.1f}%<br>Status: %{customdata[2]}<extra></extra>"
+        ),
+    ))
+    figure.update_layout(
+        barmode="overlay", height=_height(len(data)),
+        xaxis=dict(title=None, tickprefix="$", separatethousands=True), yaxis=dict(title=None),
     )
     return figure
 
@@ -175,130 +425,42 @@ def ranked_bar(
     title: str | None = None,
     max_rows: int = 12,
 ) -> go.Figure:
-    """Sorted horizontal bars -- the donut replacement."""
+    """Sorted horizontal bars."""
     if df.empty:
         return empty_figure("Nothing to show for this selection.")
-
-    p = theme.active()
     data = df.sort_values(value_column, ascending=False).head(max_rows)
     data = data.sort_values(value_column, ascending=True)
     total = float(df[value_column].sum()) or 1.0
     share = data[value_column] / total * 100
-
-    figure = go.Figure(
-        go.Bar(
-            y=data[label_column],
-            x=data[value_column],
-            orientation="h",
-            marker=_wire(color),
-            text=[f"{value:,.0f}" for value in data[value_column]],
-            textposition="outside",
-            textfont=dict(family=theme._MONO, color=p.ink_mute, size=10),
-            cliponaxis=False,
-            customdata=share,
-            hovertemplate="<b>%{y}</b><br>$%{x:,.2f}<br>%{customdata:.1f}% of total<extra></extra>",
-        )
-    )
+    figure = go.Figure(go.Bar(
+        y=data[label_column], x=data[value_column], orientation="h", marker=dict(color=color),
+        text=[f"${value:,.0f}" for value in data[value_column]], textposition="outside",
+        textfont=dict(color=theme.INK_SOFT, size=12), customdata=share,
+        hovertemplate="<b>%{y}</b><br>$%{x:,.2f}<br>%{customdata:.1f}% of total<extra></extra>",
+    ))
     figure.update_layout(
-        height=_height(len(data)),
-        xaxis=dict(title=None, tickprefix="$", separatethousands=True),
-        yaxis=dict(title=None, showgrid=False, ticks="", linecolor=p.line),
-        showlegend=False,
+        height=_height(len(data)), xaxis=dict(title=None, tickprefix="$", separatethousands=True),
+        yaxis=dict(title=None), showlegend=False,
     )
-    # Only set a title when there is one -- passing None leaves an empty title
-    # object that Plotly renders as the literal string "undefined".
+    # Only set a title when there is one -- None renders as the string "undefined".
     if title:
         figure.update_layout(title=title)
-    # FINDING (visual). The outside value labels were drawn past the end of the
-    # longest bar and then clipped by the plot area, so the largest figure --
-    # the one most worth reading -- was the one cut in half. 1.18x was not
-    # enough headroom once the labels became monospaced; 1.30 clears them, and
-    # cliponaxis=False stops the axis cropping them regardless.
-    figure.update_xaxes(range=[0, float(data[value_column].max()) * 1.30])
-    return figure
-
-
-def waterfall(
-    labels: list[str],
-    values: list[float],
-    measures: list[str],
-    *,
-    title: str | None = None,
-) -> go.Figure:
-    """Opening -> income -> expenses -> closing, as one continuous story."""
-    if not labels:
-        return empty_figure("Not enough data for a waterfall.")
-
-    p = theme.active()
-    figure = go.Figure(
-        go.Waterfall(
-            orientation="v",
-            measure=measures,
-            x=[_wrap(label) for label in labels],
-            y=values,
-            connector=dict(line=dict(color=p.line_lit, width=1, dash="dot")),
-            increasing=dict(marker=_wire(p.income)),
-            decreasing=dict(marker=_wire(p.expense)),
-            totals=dict(marker=_wire(p.budget, fill=0.24)),
-            hovertemplate="<b>%{x}</b><br>$%{y:,.2f}<extra></extra>",
-        )
-    )
-    figure.update_layout(
-        height=420,
-        showlegend=False,
-        yaxis=dict(title=None, tickprefix="$", separatethousands=True),
-        # Horizontal, wrapped labels -- see _wrap. tickangle is pinned to 0 so
-        # Plotly cannot decide to rotate them again once they get tight.
-        xaxis=dict(title=None, tickangle=0, showgrid=False),
-        margin=dict(l=8, r=8, t=34, b=48),
-    )
-    if title:
-        figure.update_layout(title=title)
+    figure.update_xaxes(range=[0, float(data[value_column].max()) * 1.18])
     return figure
 
 
 def sparkline(values: list[float], *, color: str | None = None) -> go.Figure:
-    """
-    A small trend with an emphasised endpoint.
-
-    Sized to sit under a metric, with chrome stripped -- the shape is the
-    message, the axes would only add noise. The endpoint is drawn hollow so it
-    reads as a plotted point rather than a dot of colour.
-    """
-    p = theme.active()
-    color = color or p.accent
+    """Mini bars under a metric: earlier values faded, the last one solid."""
+    color = color or theme.INK
     if not values:
         return empty_figure("")
-
-    figure = go.Figure(
-        go.Scatter(
-            y=values,
-            mode="lines",
-            line=dict(color=color, width=1.4, shape="spline", smoothing=0.4),
-            fill="tozeroy",
-            fillcolor=_translucent(color, 0.10),
-            hoverinfo="skip",
-        )
-    )
-    figure.add_trace(
-        go.Scatter(
-            y=[values[-1]],
-            x=[len(values) - 1],
-            mode="markers",
-            marker=dict(
-                color=p.void,
-                size=5,
-                line=dict(color=color, width=1.4),
-            ),
-            hoverinfo="skip",
-        )
-    )
+    faded = _translucent(color, 0.28) if color.startswith("#") else theme.UNBUDGETED
+    figure = go.Figure(go.Bar(
+        y=values, marker=dict(color=[faded] * (len(values) - 1) + [color]), hoverinfo="skip",
+    ))
     figure.update_layout(
-        height=54,
-        margin=dict(l=0, r=2, t=6, b=0),
-        showlegend=False,
-        xaxis=dict(visible=False, fixedrange=True),
-        yaxis=dict(visible=False, fixedrange=True),
+        height=48, margin=dict(l=0, r=0, t=4, b=0), showlegend=False, bargap=0.3,
+        xaxis=dict(visible=False, fixedrange=True), yaxis=dict(visible=False, fixedrange=True),
     )
     return figure
 
@@ -307,60 +469,45 @@ def trend_bars(df: pd.DataFrame) -> go.Figure:
     """Budget against actual across semesters."""
     if df.empty:
         return empty_figure("No historical data yet.")
-
-    p = theme.active()
     figure = go.Figure()
-    figure.add_trace(
-        go.Bar(
-            name="Allocated",
-            x=df["Semester"],
-            y=df["Budget"],
-            marker=_wire(p.budget, fill=_FILL_SOFT),
-            hovertemplate="Allocated  $%{y:,.2f}<extra></extra>",
-        )
-    )
-    figure.add_trace(
-        go.Bar(
-            name="Actual",
-            x=df["Semester"],
-            y=df["Spent"],
-            marker=_wire(p.expense),
-            hovertemplate="Spent      $%{y:,.2f}<extra></extra>",
-        )
-    )
+    figure.add_trace(go.Bar(
+        name="Budget", x=df["Semester"], y=df["Budget"], marker=dict(color=theme.BUDGET),
+        hovertemplate="Budget: $%{y:,.2f}<extra></extra>",
+    ))
+    figure.add_trace(go.Bar(
+        name="Actual", x=df["Semester"], y=df["Spent"], marker=dict(color=theme.INK),
+        hovertemplate="Spent: $%{y:,.2f}<extra></extra>",
+    ))
     figure.update_layout(
-        barmode="group",
-        height=380,
-        yaxis=dict(title=None, tickprefix="$", separatethousands=True),
-        xaxis=dict(title=None, showgrid=False),
+        barmode="group", height=340,
+        yaxis=dict(title=None, tickprefix="$", separatethousands=True), xaxis=dict(title=None),
     )
     return figure
 
 
-# REMOVED: `category_treemap`. Written for "more categories than bars can
-# hold", called by nothing -- `ranked_bar` is what every page uses, and with
-# 16 committees it has never run out of room. Deleted rather than kept on the
-# chance it is wanted, since a treemap encoding spend by area is a real design
-# decision and would deserve rethinking rather than reviving.
+def category_treemap(df: pd.DataFrame, *, label_column: str, value_column: str) -> go.Figure:
+    if df.empty:
+        return empty_figure("Nothing to show for this selection.")
+    figure = go.Figure(go.Treemap(
+        labels=df[label_column], parents=[""] * len(df), values=df[value_column],
+        marker=dict(colors=theme.CATEGORICAL * (len(df) // len(theme.CATEGORICAL) + 1)),
+        texttemplate="<b>%{label}</b><br>$%{value:,.0f}",
+        hovertemplate="<b>%{label}</b><br>$%{value:,.2f}<extra></extra>",
+    ))
+    figure.update_layout(height=380, margin=dict(l=0, r=0, t=10, b=0))
+    return figure
 
 
 def confidence_histogram(confidences: list[float]) -> go.Figure:
     """How certain the categorizer was, for the review queue."""
     if not confidences:
         return empty_figure("Nothing categorized yet.")
-    p = theme.active()
-    figure = go.Figure(
-        go.Histogram(
-            x=confidences,
-            nbinsx=10,
-            marker=_wire(p.accent_alt),
-            hovertemplate="Confidence %{x}<br>%{y} transactions<extra></extra>",
-        )
-    )
+    figure = go.Figure(go.Histogram(
+        x=confidences, nbinsx=10, marker=dict(color=theme.INK),
+        hovertemplate="Confidence %{x}<br>%{y} transactions<extra></extra>",
+    ))
     figure.update_layout(
-        height=220,
-        xaxis=dict(title="Match confidence", range=[0, 1]),
-        yaxis=dict(title="Transactions"),
-        showlegend=False,
+        height=220, xaxis=dict(title="Match confidence", range=[0, 1]),
+        yaxis=dict(title="Transactions"), showlegend=False,
     )
     return figure

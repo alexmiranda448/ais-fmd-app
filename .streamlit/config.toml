@@ -1,31 +1,18 @@
-# Streamlit's own theme, in both modes.
-#
-# This has to agree with ais_fmd/ui/theme.py. The widget chrome and, more
-# importantly, the st.dataframe grid are drawn by Streamlit itself and never
-# see the app stylesheet -- the grid is a canvas, so no amount of CSS reaches
-# inside it. If these values drift from the Palette definitions, light mode
-# shows dark tables on a white page. tests/test_theme_switch.py pins them
-# together so they cannot drift silently.
+# Pebble theme. Light canvas, white cards, one orange accent.
+# Card shapes, motion and the Onest font are applied by ais_fmd/ui/theme.py
+# (APP_CSS) -- these options only cover what Streamlit's theme exposes.
 
 [theme]
-base = "dark"
+base = "light"
+primaryColor = "#D6400E"
+backgroundColor = "#F5F5F3"
+secondaryBackgroundColor = "#F3F3F0"
+textColor = "#111111"
+linkColor = "#D6400E"
+borderColor = "#ECECE9"
+showWidgetBorder = false
+baseRadius = "full"
 font = "sans serif"
-
-[theme.dark]
-backgroundColor = "#000000"
-secondaryBackgroundColor = "#0A0C0F"
-textColor = "#F4F7F9"
-primaryColor = "#4C7FFF"
-borderColor = "#28323D"
-dataframeHeaderBackgroundColor = "#0A0C0F"
-
-[theme.light]
-backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F7F9FB"
-textColor = "#0B1219"
-primaryColor = "#0021A5"
-borderColor = "#D2D9E0"
-dataframeHeaderBackgroundColor = "#F7F9FB"
 
 [server]
 headless = true

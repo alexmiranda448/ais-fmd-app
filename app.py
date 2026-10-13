@@ -40,6 +40,16 @@ auth.login_gate()
 
 # --- Navigation --------------------------------------------------------------
 #
+# PEBBLE CONSOLIDATION: sixteen entries -> eleven. Seven primary pages sit in
+# the top pill bar; four admin pages sit under "More". Merged pages are hubs
+# (views/*Hub.py) that run the original, unchanged view files one at a time:
+#
+#   Dues          = Dues + Roster
+#   Transactions  = Transactions + Review Queue
+#   Assistant     = Assistant + Runbook (as "Help")
+#   Alerts & Data Quality = Alerts & Reports + Data Quality
+#   Settings      = Audit Log (+ Officer Access, deferred)
+#
 # MVP SCOPE. Two pages are commented out rather than deleted. In both cases the
 # page, its domain module, its tests and its SQLite tables all still exist and
 # still pass, and the Postgres side is written and waiting in
@@ -53,49 +63,50 @@ auth.login_gate()
 #     committee, which is what Google sign-in looks up in `profiles`. The first
 #     term is treasurer-only, so nothing needs those mappings yet -- and leaving
 #     the page on would have shipped a feature whose table lives in a migration
-#     marked "do not run", giving a PostgREST error on a table that does not
-#     exist. Removing it also drops the Google Cloud OAuth registration and the
-#     one code path that could not be tested locally (the st.login() round-trip)
-#     off the launch checklist entirely.
+#     marked "do not run". It is commented out inside views/SettingsHub.py.
 #
 #     Note this does NOT disable Google sign-in itself: `auth.login_gate` still
 #     offers it whenever an `[auth]` section is configured, and is inert
 #     otherwise. It only removes the page for managing who gets in that way.
 #
-# `Officer.py` ("My Committee") is deliberately NOT in this list -- it is a
+# `Officer.py` ("My Committee") is deliberately a primary page -- it is a
 # read-only committee view that a treasurer outranks, and it stays available.
 
-PAGES = [
-    ("ais_fmd/views/Home.py", "Home", ":material/home:", auth.Role.MEMBER),
-    ("ais_fmd/views/Dashboard.py", "Dashboard", ":material/analytics:", auth.Role.MEMBER),
-    ("ais_fmd/views/Transactions.py", "Transactions", ":material/table_rows:", auth.Role.MEMBER),
-    ("ais_fmd/views/ReviewQueue.py", "Review Queue", ":material/rule:", auth.Role.TREASURER),
-    ("ais_fmd/views/Officer.py", "My Committee", ":material/badge:", auth.Role.OFFICER),
-    ("ais_fmd/views/Dues.py", "Dues", ":material/groups:", auth.Role.MEMBER),
-    ("ais_fmd/views/Roster.py", "Roster", ":material/checklist:", auth.Role.TREASURER),
-    # ("ais_fmd/views/Reimbursements.py", "Reimbursements", ":material/receipt_long:", auth.Role.MEMBER),  # MVP: deferred
-    ("ais_fmd/views/Reports.py", "Alerts & Reports", ":material/notifications:", auth.Role.MEMBER),
-    ("ais_fmd/views/Reconciliation.py", "Reconciliation", ":material/balance:", auth.Role.MEMBER),
-    ("ais_fmd/views/Planner.py", "Scenario Planner", ":material/insights:", auth.Role.TREASURER),
-    ("ais_fmd/views/Treasury.py", "Treasury", ":material/account_balance:", auth.Role.TREASURER),
-    ("ais_fmd/views/DataQuality.py", "Data Quality", ":material/health_and_safety:", auth.Role.TREASURER),
-    # ("ais_fmd/views/OfficerAccess.py", "Officer Access", ":material/admin_panel_settings:", auth.Role.TREASURER),  # MVP: deferred
-    ("ais_fmd/views/AuditLog.py", "Audit Log", ":material/history:", auth.Role.TREASURER),
-    ("ais_fmd/views/Assistant.py", "Assistant", ":material/smart_toy:", auth.Role.MEMBER),
-    ("ais_fmd/views/Runbook.py", "Runbook", ":material/menu_book:", auth.Role.MEMBER),
-]
+PAGES = {
+    "": [
+        ("ais_fmd/views/Home.py", "Home", ":material/home:", auth.Role.MEMBER),
+        ("ais_fmd/views/Dashboard.py", "Dashboard", ":material/analytics:", auth.Role.MEMBER),
+        ("ais_fmd/views/DuesHub.py", "Dues", ":material/groups:", auth.Role.MEMBER),
+        ("ais_fmd/views/TransactionsHub.py", "Transactions", ":material/table_rows:", auth.Role.MEMBER),
+        ("ais_fmd/views/Planner.py", "Planner", ":material/insights:", auth.Role.TREASURER),
+        ("ais_fmd/views/AssistantHub.py", "Assistant", ":material/smart_toy:", auth.Role.MEMBER),
+        ("ais_fmd/views/Officer.py", "My Committee", ":material/badge:", auth.Role.OFFICER),
+        # ("ais_fmd/views/Reimbursements.py", "Reimbursements", ":material/receipt_long:", auth.Role.MEMBER),  # MVP: deferred
+    ],
+    "More": [
+        ("ais_fmd/views/Reconciliation.py", "Reconciliation", ":material/balance:", auth.Role.MEMBER),
+        ("ais_fmd/views/AlertsHub.py", "Alerts & Data Quality", ":material/notifications:", auth.Role.MEMBER),
+        ("ais_fmd/views/Treasury.py", "Treasury", ":material/account_balance:", auth.Role.TREASURER),
+        ("ais_fmd/views/SettingsHub.py", "Settings", ":material/settings:", auth.Role.TREASURER),
+    ],
+}
 
 identity = auth.current_user()
 
-pages = [
-    st.Page(path, title=title, icon=icon, default=(title == "Home"))
-    for path, title, icon, required in PAGES
-    if identity.can(required)
-]
+pages = {
+    section: [
+        st.Page(path, title=title, icon=icon, default=(title == "Home"))
+        for path, title, icon, required in entries
+        if identity.can(required)
+    ]
+    for section, entries in PAGES.items()
+}
+pages = {section: entries for section, entries in pages.items() if entries}
 
-navigation = st.navigation(pages)
+navigation = st.navigation(pages, position="top")
 
 # --- Sidebar -----------------------------------------------------------------
+# Collapsed by default (shell.bootstrap). Sandbox-only controls live here.
 
 auth.role_switcher()
 
@@ -116,7 +127,6 @@ if settings.is_sandbox():
         "folder is touched."
     )
 
-shell.mode_switch()
 shell.sidebar_footer()
 
 navigation.run()

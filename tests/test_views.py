@@ -230,7 +230,7 @@ def test_rendered_text_does_not_trip_the_latex_trap(path: Path, seeded_db, use_d
 def test_dashboard_semester_filter_changes_the_figures(seeded_db, use_db):
     use_db(seeded_db)
     app = run_view(VIEWS / "Dashboard.py")
-    picker = app.sidebar.selectbox(key="dash_semester")
+    picker = app.selectbox(key="dash_semester")
     assert len(picker.options) > 1, "need at least two terms to exercise the filter"
 
     first = [metric.value for metric in app.metric]
@@ -246,9 +246,9 @@ def test_dashboard_semester_filter_changes_the_figures(seeded_db, use_db):
 def test_dashboard_committee_filter_runs_clean(seeded_db, use_db):
     use_db(seeded_db)
     app = run_view(VIEWS / "Dashboard.py")
-    picker = app.sidebar.selectbox(key="dash_committee")
+    picker = app.selectbox(key="dash_committee")
     for option in picker.options[:4]:
-        app = app.sidebar.selectbox(key="dash_committee").select(option).run()
+        app = app.selectbox(key="dash_committee").select(option).run()
         assert_clean(app, f"Dashboard filtered to {option}")
 
 
@@ -402,3 +402,42 @@ def test_planner_inputs_accept_edge_values(seeded_db, use_db):
                 break
             app = target.set_value(value).run()
             assert_clean(app, f"Planner with {key}={value}")
+
+
+# --- Pebble consolidation: hubs ----------------------------------------------
+
+HUB_VIEWS = {
+    "DuesHub.py": ("dues_hub", ["Dues", "Roster"]),
+    "TransactionsHub.py": ("transactions_hub", ["Transactions", "Review Queue"]),
+    "AssistantHub.py": ("assistant_hub", ["Assistant", "Help"]),
+    "AlertsHub.py": ("alerts_hub", ["Alerts & Reports", "Data Quality"]),
+    "SettingsHub.py": ("settings_hub", ["Officer Access", "Audit Log"]),
+}
+
+
+@pytest.mark.parametrize(
+    "hub,choice",
+    [(hub, label) for hub, (_, labels) in HUB_VIEWS.items() for label in labels],
+)
+def test_every_hub_view_renders(hub, choice, seeded_db, use_db):
+    """Each merged page renders inside its hub, not just on its own."""
+    use_db(seeded_db)
+    key, _ = HUB_VIEWS[hub]
+    app = run_view(VIEWS / hub, **{key: choice})
+    assert_clean(app, f"{hub} showing {choice!r}")
+
+
+def test_hub_hides_views_a_member_cannot_open(seeded_db, use_db):
+    """A member on Dues sees Dues only -- no Roster, and no access warning."""
+    use_db(seeded_db)
+    app = run_view(VIEWS / "DuesHub.py", role=auth.Role.MEMBER, dues_hub="Roster")
+    assert_clean(app, "DuesHub as MEMBER")
+    warnings = " ".join(block.value for block in app.warning)
+    assert "access required" not in warnings.lower()
+
+
+def test_settings_hub_denies_a_member(seeded_db, use_db):
+    use_db(seeded_db)
+    app = run_view(VIEWS / "SettingsHub.py", role=auth.Role.MEMBER)
+    warnings = " ".join(block.value for block in app.warning)
+    assert "access required" in warnings.lower()
