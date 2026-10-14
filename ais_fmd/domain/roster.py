@@ -318,34 +318,8 @@ def parse_roster(df: pd.DataFrame) -> RosterImport:
 
 # --- Matching ----------------------------------------------------------------
 
-# "ZELLE FROM JANE DOE ON 08/19 REF # BACX1234 <memo>" -- everything the payer
-# typed comes after the reference number. Wells Fargo puts the payer's name
-# before it, which is why the memo has to be sliced out rather than searched
-# for in the whole string.
-_AFTER_REF_RE = re.compile(r"ref\s*#\s*\S+\s*(.*)$", re.I | re.S)
-
-
-def extract_memo(details: object) -> str:
-    """
-    The part of a transfer description the payer wrote.
-
-    Returns "" when there is no memo, which is the common case and must not be
-    confused with a memo naming nobody in particular.
-    """
-    if details is None:
-        return ""
-    text = _WHITESPACE_RE.sub(" ", str(details)).strip()
-
-    match = _AFTER_REF_RE.search(text)
-    if match:
-        return match.group(1).strip()
-
-    # Venmo: "txn id | note | from | to"
-    if "|" in text:
-        parts = [part.strip() for part in text.split("|")]
-        if len(parts) >= 2:
-            return parts[1]
-    return ""
+# The memo extractor lives with the categorizer, which reads memos too.
+from .categorize.predicates import extract_memo  # noqa: E402  (re-exported)
 
 
 @dataclass(frozen=True)

@@ -17,6 +17,19 @@ from .terms import attach_semester, prepare_terms
 # Committee spend is "money out" -- negative amounts, reported as positive.
 EXPENSE = "expense"
 INCOME = "income"
+TRANSFERS_ID = 3
+
+
+def is_transfer(df: pd.DataFrame) -> pd.Series:
+    """
+    Rows booked to Transfers -- strictly False for uncategorized rows.
+
+    `budget_category` is a nullable Int64 column, where `NA != 3` is NA rather
+    than True, and a boolean mask treats NA as False. Filtering with
+    `df[df["budget_category"] != 3]` therefore silently dropped every
+    uncategorized row from income and expense totals.
+    """
+    return df["budget_category"].eq(TRANSFERS_ID).fillna(False).astype(bool)
 
 
 def _committee_names(series: pd.Series) -> pd.Series:
@@ -145,6 +158,11 @@ def _totals_for(scoped: pd.DataFrame) -> dict[str, float]:
     if scoped.empty:
         return {"income": 0.0, "expenses": 0.0, "net": 0.0, "count": 0}
 
+    # Transfers are the chapter's own money moving between its own accounts
+    # (Venmo cashed out to checking, say) -- neither income nor spending.
+    # Treasury, 2026-10-01.
+    if "budget_category" in scoped.columns:
+        scoped = scoped[~is_transfer(scoped)]
     income = float(scoped[scoped["amount"] > 0]["amount"].sum())
     expenses = float(abs(scoped[scoped["amount"] < 0]["amount"].sum()))
     return {
@@ -315,6 +333,8 @@ def categorize_flow(df: pd.DataFrame, direction: str) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=["Category", "Amount"])
 
+    if "budget_category" in df.columns:
+        df = df[~is_transfer(df)]
     scoped = df[df["amount"] > 0] if direction == INCOME else df[df["amount"] < 0]
     if scoped.empty:
         return pd.DataFrame(columns=["Category", "Amount"])

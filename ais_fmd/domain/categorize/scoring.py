@@ -76,6 +76,11 @@ MEETING_WEEKDAYS = frozenset({"Tuesday", "Wednesday"})
 # `scripts/tune_scoring.py` for the coverage/√ risk trade-off at other values.
 AUTO_APPLY_THRESHOLD = 0.75
 
+# Confidence booked on a row the card decided. High, but deliberately not 1.0:
+# unlike an exact rule it can be wrong when someone used the card for another
+# committee's purchase, and the spot-check tools sample by confidence.
+CARD_DEFAULT_CONFIDENCE = 0.95
+
 # Weight scale: what "one unit" of evidence means.
 #   2.0  strong structural signal (meeting weekday, food-on-a-meeting-day)
 #   1.0  ordinary corroboration (catering-sized amount)
@@ -112,14 +117,46 @@ MAX_NON_CARD_EVIDENCE = (
 # card treasury has confirmed for the current cohort belongs to that card's
 # committee, whatever the merchant, the weekday or the amount suggest.
 #
-# In the pipeline this is not a weight at all: `CardRegistry.certain` books the
-# row as an exact rule before scoring is consulted. The weight exists for
+# CHANGED 2026-10-01: treasury softened this. The card is the default, not a
+# certainty: members sometimes buy for another committee with the card they have
+# on hand (meeting food especially), so it holds unless the *other* evidence
+# agrees on a different committee. In the pipeline that is `categorize_records`,
+# which scores the row without the card and only lets that reading displace the
+# card when it clears the auto-apply gate. The weight here exists for
 # callers that score a record directly (weight fitting, diagnostics), and is
 # derived rather than chosen so it cannot quietly fall behind: at twice the
 # largest competing total plus one, a confirmed card beats a full meeting-food
 # reading by enough margin to clear the auto-apply gate on its own
 # (`test_a_confirmed_card_outweighs_everything_scoring_can_say`).
 W_CARD_VERIFIED = 2 * MAX_NON_CARD_EVIDENCE + 1.0
+
+# How much the rest of the evidence needs to overrule a confirmed card in the
+# pipeline: every signal that can speak, all for the same other committee.
+# Treasury's words: the card is "taken unless all of the other classifications
+# point towards it not being the case". Today the only reading that complete is
+# a catering-sized food purchase on a meeting weekday -- a Membership VP's $40
+# Tuesday snack run keeps its card, a $150 one is Meeting Food.
+CARD_OVERRULE_EVIDENCE = MAX_NON_CARD_EVIDENCE
+
+# Committees whose cards are never overruled automatically. When every other
+# signal disagrees with one of these cards, the row goes to the model and then
+# a human instead. Consulting caters its own events from the same restaurants
+# Meeting Food uses, often on meeting days -- treasury, 2026-10-01: that "is
+# absolutely going to happen multiple times" and must not land in Meeting Food.
+# Keyed on the committee, not a card number, so it survives the next handover.
+REVIEW_ON_CARD_CONFLICT = frozenset({7})
+
+# Committees whose cardholder mostly buys meeting food. On these cards even a
+# *partial* meeting-food reading -- food on a meeting day, but not
+# catering-sized -- is not left on the card's default; it goes to the model and
+# then a human. Operations: the VP buys the meeting food and "absolutely
+# nothing" else except the odd thing for her own committee, such as a $66
+# rewards dinner (treasury, 2026-10-01). A full reading still overrules the card
+# outright, as on any other card.
+REVIEW_MEETING_DAY_FOOD_ON = frozenset({6})
+
+# Food bought on a meeting day: the meeting-food reading without the size signal.
+MEETING_DAY_FOOD_EVIDENCE = W_FOOD_MERCHANT + W_MEETING_WEEKDAY + W_MEETING_CONJUNCTION
 W_CARD_UNVERIFIED = 0.6   # inferred only, must never beat a verified signal
 
 # A food purchase at or above this reads as catering for a meeting rather than
@@ -317,13 +354,19 @@ class CardRegistry:
     def items(self) -> list[tuple[str, CardAssignment]]:
         return sorted(self._cards.items())
 
-    def certain(self, record: dict) -> Classification | None:
+    def default_for(self, record: dict, *, note: str = "") -> Classification | None:
         """
-        The committee a confirmed, in-cohort card decides outright -- or None.
+        The committee a confirmed, in-cohort card points at -- or None.
 
-        This is the top of the pipeline, ahead of every other rule. It never
-        fires for an unverified card (that is a hint, weighed in scoring) or for
-        a card outside its cohort's dates (that card belongs to someone else now).
+        This is the *default*, not a verdict: the pipeline takes it unless the
+        other evidence confidently names a different committee (treasury,
+        2026-10-01 -- a member with their card on hand sometimes buys for
+        another committee, meeting food above all). It never fires for an
+        unverified card (that is a hint, weighed in scoring) or for a card
+        outside its cohort's dates (that card belongs to someone else now).
+
+        `note` is appended to the reason, so a reviewer can see when the card
+        stood against some dissent.
         """
         card = card_number(record.get("details"))
         assignment = self.get(card, record_date(record))
@@ -334,8 +377,8 @@ class CardRegistry:
         return Classification(
             committee_id=assignment.committee_id,
             purpose=COMMITTEE_PURPOSE.get(assignment.committee_id, "Misc."),
-            rule=f"Card {card}{holder} — on the{era} card roster",
-            confidence=1.0,
+            rule=f"Card {card}{holder} — on the{era} card roster{note}",
+            confidence=CARD_DEFAULT_CONFIDENCE,
             source="rule",
         )
 

@@ -143,6 +143,29 @@ def attach_semester(
     return out
 
 
+def dues_terms(df_terms: pd.DataFrame) -> pd.DataFrame:
+    """
+    The terms table with each term reaching back to the day after the previous
+    one ended -- the window dues for that term arrive in.
+
+    Only for tagging dues. Spending keeps the real term dates. Mirrors
+    `predicates._reach_back`, which does the same for dues matching. Summer
+    terms are skipped: nobody pays dues for a summer, so a July payment counts
+    toward the coming fall. (Skipping every term without stored rates was tried
+    first and was wrong -- terms whose rates were never confirmed still charged
+    dues, and they vanished from the dues pages.)
+    """
+    terms = prepare_terms(df_terms)
+    if "Semester" in terms.columns:
+        terms = terms[~terms["Semester"].astype(str).str.lower().str.startswith("summer")]
+    if terms.empty:
+        return terms
+    previous_end = terms["end_date"].shift(1) + pd.Timedelta(days=1)
+    reach = previous_end.notna() & (previous_end < terms["start_date"])
+    terms.loc[reach, "start_date"] = previous_end[reach]
+    return terms
+
+
 def ordered_semesters(df_terms: pd.DataFrame) -> list[str]:
     """Semester names, chronologically. The canonical ordering for filters."""
     terms = prepare_terms(df_terms)

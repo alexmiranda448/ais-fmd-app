@@ -42,7 +42,12 @@
   "_SOURCE_2026_2027": [
     "Fall 2026 cards: E-Board Meeting 05 notes (09/21/26), VP Treasury section,",
     "'Collect debit card last 4 digits'. Marketing and Prof Dev: no card (n/a).",
-    "3466 confirmed as the treasurer's card on 2026-09-23. Operations: not listed."
+    "3466 confirmed as the treasurer's card on 2026-09-23. Operations: not listed.",
+    "9570 added 2026-10-01: the VP of Operations. She buys the meeting food, and",
+    "now and then something for her own committee (a rewards dinner at Chili's).",
+    "The card defaults to Operations (6, formerly Corporate Relations); meeting",
+    "food on it is caught by the meeting-food evidence -- see",
+    "scoring.REVIEW_MEETING_DAY_FOOD_ON."
   ],
 
   "_UNDOCUMENTED": [
@@ -58,6 +63,7 @@
   "7101": {"committee": 5, "holder": "Membership VP", "verified": true, "era": "2026-2027"},
   "3526": {"committee": 4, "holder": "President", "verified": true, "era": "2026-2027"},
   "3466": {"committee": 2, "holder": "Treasurer", "verified": true, "era": "2026-2027"},
+  "9570": {"committee": 6, "holder": "VP Operations", "verified": true, "era": "2026-2027"},
 
   "8313": {"committee": 5, "holder": "Membership VP", "verified": true, "era": "2024-2026"},
   "5718": {"committee": 5, "holder": "Membership VP", "verified": true, "era": "2024-2026"},

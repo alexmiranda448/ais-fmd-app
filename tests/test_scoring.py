@@ -22,6 +22,7 @@ from ais_fmd.domain.categorize import pipeline
 from ais_fmd.domain.categorize.pipeline import categorize_records
 from ais_fmd.domain.categorize.scoring import (
     AUTO_APPLY_THRESHOLD,
+    CARD_DEFAULT_CONFIDENCE,
     MAX_NON_CARD_EVIDENCE,
     W_CARD_VERIFIED,
     CardAssignment,
@@ -87,15 +88,23 @@ def test_the_card_weight_is_derived_so_it_cannot_fall_behind():
     assert W_CARD_VERIFIED >= 2 * MAX_NON_CARD_EVIDENCE
 
 
-def test_the_pipeline_books_a_confirmed_card_before_scoring():
-    merchant, purchase, amount = FULL_MEETING_FOOD
-    run = categorize_records([record(wells(merchant, purchase, card="5718"), amount)], cards=ROSTER)
+def test_the_pipeline_books_a_confirmed_card_by_default():
+    run = categorize_records([record(wells("DICKS SPORTING GOODS", "10/14", card="5718"), -60.00)],
+                             cards=ROSTER)
     booked = run.classifications[0]
     assert booked.committee_id == 5
     assert booked.source == "rule"
-    assert booked.confidence == 1.0
+    assert booked.confidence == CARD_DEFAULT_CONFIDENCE
     assert "Card 5718" in booked.rule, "the reason must name the card"
-    assert 0 not in run.proposals, "scoring must not even be consulted"
+    assert 0 not in run.proposals, "nothing argued with the card"
+
+
+def test_the_pipeline_lets_every_other_signal_overrule_the_card():
+    """Treasury, 2026-10-01: the card is the default, not a verdict."""
+    merchant, purchase, amount = FULL_MEETING_FOOD
+    run = categorize_records([record(wells(merchant, purchase, card="5718"), amount)], cards=ROSTER)
+    assert run.classifications[0].committee_id == 8
+    assert 0 in run.proposals, "the queue can still show the evidence that overruled it"
 
 
 def test_a_card_booking_names_its_holder():

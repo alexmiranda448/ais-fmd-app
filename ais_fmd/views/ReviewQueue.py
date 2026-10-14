@@ -37,8 +37,9 @@ identity = auth.require(auth.Role.TREASURER)
 shell.environment_banner()
 shell.page_header(
     "Review Queue",
-    "Work through what the categorizer could not resolve. Purchases on a card "
-    "in the card roster never reach this queue.",
+    "Work through what the categorizer could not resolve. A purchase on a card "
+    "in the card roster only reaches this queue when the rest of its evidence "
+    "disagrees with the card.",
 )
 
 transactions = repo.load_transactions()

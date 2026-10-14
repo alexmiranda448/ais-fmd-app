@@ -15,7 +15,7 @@ import pytest
 
 from ais_fmd.domain.categorize.merchants import MerchantMemory, merchant_key
 from ais_fmd.domain.categorize.pipeline import categorize_records
-from ais_fmd.domain.categorize.scoring import CardAssignment, CardRegistry
+from ais_fmd.domain.categorize.scoring import CARD_DEFAULT_CONFIDENCE, CardAssignment, CardRegistry
 from ais_fmd.domain.categorize.predicates import (
     DuesSchedule,
     DuesWindow,
@@ -165,26 +165,87 @@ def booked(row: dict):
     return categorize_records([row], cards=ROSTER).classifications[0]
 
 
-def test_a_confirmed_card_decides_the_committee():
+def test_a_confirmed_card_decides_the_committee_by_default():
     result = booked(carded("4831", "2026-10-26"))
     assert result.committee_id == 7
-    assert result.source == "rule" and result.confidence == 1.0
+    assert result.source == "rule" and result.confidence == CARD_DEFAULT_CONFIDENCE
 
 
-def test_the_card_beats_a_tuesday_food_run():
+def test_a_full_meeting_food_reading_overrules_the_card():
     """
-    REVERSED 2026-09-23. The old ruling kept Tuesday/Wednesday food on a
-    Membership card as Meeting Food. Treasury now rules the card decides.
-    09/15/2026 is a Tuesday; this is a full meeting-food reading on 0594.
+    Treasury, 2026-10-01: the card is taken "unless all of the other
+    classifications point towards it not being the case" -- a member with their
+    card on hand sometimes buys the meeting food. 09/15/2026 is a Tuesday; this
+    is a catering-sized food purchase on 0594, every signal saying Meeting Food.
     """
     result = booked(carded("0594", "2026-09-16", "PUBLIX SUPER MAR", "09/15", -159.80))
-    assert result.committee_id == 5, "the card must outrank meeting-food timing"
+    assert result.committee_id == 8
+    assert result.source == "scored"
+    assert "Card 0594" in result.rule, "the reason must name the card it overruled"
 
 
-def test_consulting_food_on_a_meeting_day_stays_consulting():
+def test_a_partial_meeting_food_reading_leaves_the_card_standing():
+    """Food on a Tuesday, but not catering-sized: not *all* the evidence, so the card holds."""
+    result = booked(carded("0594", "2026-09-16", "PUBLIX SUPER MAR", "09/15", -40.00))
+    assert result.committee_id == 5
+    assert "lean Meeting Food" in result.rule, "the dissent must still be visible"
+
+
+def test_consulting_lunch_on_a_meeting_day_stays_consulting():
     """The overlap that got merchant memory removed: same restaurants, different committees."""
-    result = booked(carded("4831", "2026-09-16", "CHIPOTLE 1462", "09/15", -210.00))
+    result = booked(carded("4831", "2026-09-16", "CHIPOTLE 1462", "09/15", -45.00))
     assert result.committee_id == 7
+
+
+def test_consulting_catering_on_a_meeting_day_goes_to_review():
+    """
+    Consulting caters its own events from the same restaurants, on meeting
+    days, "multiple times" a semester (treasury, 2026-10-01). A full
+    meeting-food reading on a Consulting card is neither booked to Meeting Food
+    nor waved through as Consulting: it goes to the model, then a human.
+    """
+    run = categorize_records(
+        [carded("4831", "2026-09-16", "CHIPOTLE 1462", "09/15", -210.00)], cards=ROSTER
+    )
+    result = run.classifications[0]
+    assert not result.is_assigned
+    assert "Consulting" in result.rule and "Meeting Food" in result.rule
+    assert run.held_for_review[0].winner == 7, "the queue suggests the card's committee first"
+
+
+def test_the_consulting_exception_follows_the_committee_not_the_card():
+    """A new Consulting card next year gets the same treatment with no code change."""
+    roster = CardRegistry({"1111": CardAssignment(7, "Next VP", verified=True)})
+    run = categorize_records(
+        [carded("1111", "2026-09-16", "CHIPOTLE 1462", "09/15", -210.00)], cards=roster
+    )
+    assert not run.classifications[0].is_assigned
+
+
+def test_the_model_only_books_what_it_is_sure_of(monkeypatch):
+    from ais_fmd.domain.categorize import pipeline
+    from ais_fmd.domain.categorize.llm import LLMOutcome
+    from ais_fmd.domain.categorize.predicates import Classification
+
+    seen = []
+
+    def fake(residual):
+        seen.extend(residual)
+        return LLMOutcome(classifications={
+            0: Classification(7, "Professional Development", "Model: consulting event", 0.9, "llm"),
+            1: Classification(8, "Meeting Food", "Model: maybe a meeting", 0.55, "llm"),
+        })
+
+    monkeypatch.setattr(pipeline, "classify_residual", fake)
+    rows = [
+        carded("4831", "2026-09-16", "CHIPOTLE 1462", "09/15", -210.00),
+        carded("9999", "2026-09-17", "SOMEWHERE ODD", "09/17", -30.00),
+    ]
+    run = categorize_records(rows, cards=ROSTER)
+    assert run.classifications[0].committee_id == 7
+    assert not run.classifications[1].is_assigned
+    assert "Model suggests Meeting Food (55%)" in run.classifications[1].rule
+    assert "Consulting" in seen[0][1]["upstream_note"], "the model is told what the conflict is"
 
 
 def test_an_old_cohorts_card_does_not_book_new_spending():

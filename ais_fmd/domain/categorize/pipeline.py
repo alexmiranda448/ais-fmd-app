@@ -3,11 +3,13 @@ Categorization orchestration.
 
 The order is the whole point:
 
-    1. The card roster  -- a purchase on a card treasury has confirmed for the
-                           current officer cohort is that card's committee.
-                           Outranks everything (treasury ruling, 2026-09-23).
-    2. Exact rules      -- unambiguous markers: exact dues amount, a memo, the
+    1. Exact rules      -- unambiguous markers: exact dues amount, a memo, the
                            sign of a transfer. Certainties.
+    2. The card roster  -- a purchase on a card treasury has confirmed for the
+                           current officer cohort defaults to that card's
+                           committee, unless the other evidence confidently
+                           names a different one (treasury ruling, 2026-10-01;
+                           from 2026-09-23 until then the card was absolute).
     3. Scoring          -- keyword, weekday and amount evidence, gated on
                            confidence; the uncertain rest goes to a human
     4. The model        -- only what is genuinely left over
@@ -40,7 +42,18 @@ from .predicates import (
     exact_rules,
     first_match,
 )
-from .scoring import AUTO_APPLY_THRESHOLD, CardRegistry, ScoredResult, score
+from ...config.categories import committee_name
+from .predicates import COMMITTEE_PURPOSE
+from .scoring import (
+    AUTO_APPLY_THRESHOLD,
+    CARD_OVERRULE_EVIDENCE,
+    MEETING_DAY_FOOD_EVIDENCE,
+    REVIEW_MEETING_DAY_FOOD_ON,
+    REVIEW_ON_CARD_CONFLICT,
+    CardRegistry,
+    ScoredResult,
+    score,
+)
 
 
 @dataclass
@@ -119,6 +132,8 @@ def categorize_records(
     Fall 2024 constant it always used -- see `predicates.DuesSchedule`.
     """
     registry = cards or CardRegistry()
+    # The same scorer with no card in it: "what does everything *else* say?"
+    no_cards = CardRegistry({})
     # Bound once, not per row: `exact_rules` builds a partial when a schedule is
     # supplied, and this loop runs 892 times on the real table.
     rules = exact_rules(dues)
@@ -127,18 +142,53 @@ def categorize_records(
     residual: list[tuple[int, dict]] = []
 
     for index, record in enumerate(records):
-        # The card first. A confirmed card in its cohort's dates says whose
-        # spending this was, and nothing below -- merchant, weekday, amount --
-        # is allowed to argue with it.
-        carded = registry.certain(record)
-        if carded is not None:
-            results[index] = carded
-            continue
-
         # Certainties: an exact dues amount, a memo, a transfer's sign.
         exact = first_match(record, rules)
         if exact.is_assigned:
             results[index] = exact
+            continue
+
+        # The card is the default. It stands unless the rest of the evidence --
+        # scoring with the card taken out -- names a different committee with
+        # every signal it has, as when a member buys meeting food on whichever
+        # card they had with them. Partial or contested dissent does not
+        # displace it; it is only noted in the reason.
+        carded = registry.default_for(record)
+        if carded is not None:
+            others = score(record, cards=no_cards)
+            if others.winner is None or others.winner == carded.committee_id:
+                results[index] = carded
+            elif _overrules_the_card(others, threshold):
+                if carded.committee_id in REVIEW_ON_CARD_CONFLICT:
+                    # Too common a collision to auto-book either way. The
+                    # proposal is scored *with* the card, so the queue shows
+                    # the card's committee first and what contested it.
+                    proposals[index] = score(record, cards=registry)
+                    results[index] = _card_contested(carded, others)
+                    residual.append((index, _with_note(record, results[index].rule)))
+                    continue
+                proposals[index] = others
+                results[index] = _card_overruled(carded, others)
+            elif (
+                carded.committee_id in REVIEW_MEETING_DAY_FOOD_ON
+                and others.winner == 8
+                and others.top_score >= MEETING_DAY_FOOD_EVIDENCE
+            ):
+                # A cardholder who mostly buys meeting food, buying food on a
+                # meeting day: too likely to be meeting food to default to her
+                # committee, not certain enough to book. The model decides.
+                proposals[index] = others
+                results[index] = _card_contested(carded, others)
+                residual.append((index, _with_note(record, results[index].rule)))
+                continue
+            else:
+                results[index] = registry.default_for(
+                    record,
+                    note=(
+                        f"; other signals lean {committee_name(others.winner)} "
+                        f"({others.confidence:.0%}), not enough to overrule the card"
+                    ),
+                )
             continue
 
         # An unassigned result that still carries a rule string is a *hint*: the
@@ -158,13 +208,73 @@ def categorize_records(
                 continue
 
         # Unscored, or scored too close to call: a human or the model decides.
-        residual.append((index, record))
+        # Whatever the rules recognised on the way travels with the row.
+        residual.append((index, _with_note(record, results[index].rule)))
 
+    # The model only books what it is sure of; the rest reaches a human with
+    # its suggestion attached.
     outcome = classify_residual(residual)
     for index, classification in outcome.classifications.items():
-        results[index] = classification
+        if classification.confidence >= threshold:
+            results[index] = classification
+        else:
+            results[index] = Classification(
+                committee_id=None,
+                purpose=None,
+                rule=(
+                    f"Model suggests {committee_name(classification.committee_id)} "
+                    f"({classification.confidence:.0%}) -- "
+                    f"{classification.rule.removeprefix('Model: ')}"
+                ),
+                confidence=classification.confidence,
+                source="none",
+            )
 
     return CategorizationRun(classifications=results, llm=outcome, proposals=proposals)
+
+
+def _with_note(record: dict, note: str) -> dict:
+    """The record, carrying what upstream recognised, for the model to read."""
+    return {**record, "upstream_note": note} if note else record
+
+
+def _card_contested(carded: Classification, others: ScoredResult) -> Classification:
+    """Unassigned: the card and every other signal disagree, and neither may win alone."""
+    card = carded.rule.split(" — ")[0]
+    return Classification(
+        committee_id=None,
+        purpose=None,
+        rule=(
+            f"{card} is {committee_name(carded.committee_id)}'s, but every other "
+            f"signal says {committee_name(others.winner)} -- {others.explain()}"
+        ),
+        confidence=0.0,
+        source="none",
+    )
+
+
+def _overrules_the_card(others: ScoredResult, threshold: float) -> bool:
+    """Every signal there is, unopposed, for one committee other than the card's."""
+    return (
+        others.top_score >= CARD_OVERRULE_EVIDENCE
+        and not others.conflicting()
+        and others.confidence >= threshold
+    )
+
+
+def _card_overruled(carded: Classification, others: ScoredResult) -> Classification:
+    """The other evidence's answer, saying which card it displaced and why."""
+    card = carded.rule.split(" — ")[0]
+    return Classification(
+        committee_id=others.winner,
+        purpose=COMMITTEE_PURPOSE.get(others.winner, "Misc."),
+        rule=(
+            f"Scored over {card} ({committee_name(carded.committee_id)}): "
+            f"{others.explain()}"
+        ),
+        confidence=others.confidence,
+        source="scored",
+    )
 
 
 def categorize_frame(

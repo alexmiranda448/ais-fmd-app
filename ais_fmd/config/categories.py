@@ -35,7 +35,10 @@ COMMITTEES: tuple[Committee, ...] = (
     Committee(3, "Transfers", kind="ledger"),
     Committee(4, "President"),
     Committee(5, "Membership"),
-    Committee(6, "Corporate Relations"),
+    # Formerly "Corporate Relations", now defunct; the VP of Operations' own
+    # committee took its place (treasury, 2026-10-01). Same ID, so earlier
+    # terms' budgets and spending stay attached to it.
+    Committee(6, "Operations"),
     Committee(7, "Consulting"),
     Committee(8, "Meeting Food"),
     Committee(9, "Marketing"),

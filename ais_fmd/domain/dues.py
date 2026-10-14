@@ -21,7 +21,7 @@ import pandas as pd
 
 from .categorize.predicates import DUES_AMOUNTS, DuesSchedule, DuesWindow
 from .money import parse_amount
-from .terms import attach_semester, date_range_for_semester
+from .terms import attach_semester, date_range_for_semester, dues_terms
 
 DUES_COMMITTEE_ID = 1
 
@@ -68,7 +68,9 @@ ACCEPT_VENMO_NET_OF_FEES = True
 # those counted as dues. Guessing would move roughly $1,870 of income.
 CONFIRMED_DUES_RATES: dict[str, tuple[Decimal, ...]] = {
     "Spring 2026": (Decimal("35.00"), Decimal("52.50")),
-    "Fall 2026": (Decimal("50.00"), Decimal("65.00")),
+    # $35 is the exec rate, confirmed by treasury 2026-10-01 as official "for at
+    # least this semester" -- it is what `AIS EXEC MEMBERSHIP FEE` payments are.
+    "Fall 2026": (Decimal("35.00"), Decimal("50.00"), Decimal("65.00")),
 }
 
 
@@ -287,7 +289,7 @@ def summarize(
     dues = dues_transactions(df_transactions, schedule_from_terms(df_terms))
     if dues.empty:
         return DuesSummary(semester, 0.0, 0, 0, {}, None, None)
-    return _summarize_tagged(attach_semester(dues, df_terms), semester)
+    return _summarize_tagged(attach_semester(dues, dues_terms(df_terms)), semester)
 
 
 def _summarize_tagged(tagged: pd.DataFrame, semester: str) -> DuesSummary:
@@ -339,7 +341,7 @@ def collection_curve(
     if dues.empty:
         return pd.DataFrame(columns=columns)
 
-    tagged = attach_semester(dues, df_terms)
+    tagged = attach_semester(dues, dues_terms(df_terms))
     scoped = tagged[tagged["Semester"] == semester].copy()
     if scoped.empty:
         return pd.DataFrame(columns=columns)
@@ -365,7 +367,7 @@ def compare_semesters(
 ) -> pd.DataFrame:
     """One row per semester, for a side-by-side view."""
     dues = dues_transactions(df_transactions, schedule_from_terms(df_terms))
-    tagged = attach_semester(dues, df_terms) if not dues.empty else dues
+    tagged = attach_semester(dues, dues_terms(df_terms)) if not dues.empty else dues
 
     rows = []
     for semester in semesters:
@@ -400,7 +402,7 @@ def payer_roster(
     if dues.empty:
         return pd.DataFrame(columns=columns)
 
-    tagged = attach_semester(dues, df_terms)
+    tagged = attach_semester(dues, dues_terms(df_terms))
     scoped = tagged[tagged["Semester"] == semester].copy()
     scoped = scoped[scoped["payer"].notna()]
     if scoped.empty:

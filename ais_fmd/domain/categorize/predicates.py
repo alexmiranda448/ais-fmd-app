@@ -35,8 +35,8 @@ what makes them the highest-value tests in the repository.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
-from datetime import date, datetime
+from dataclasses import dataclass, replace
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from functools import partial
 from typing import Callable
@@ -83,6 +83,24 @@ class DuesWindow:
     verified: bool = False
 
 
+def _reach_back(windows: "list[DuesWindow]") -> tuple[DuesWindow, ...]:
+    """
+    Stretch each term's dues window back to the day after the previous term ended.
+
+    Treasury, 2026-10-01: nobody pays dues for a semester that is over, so a
+    payment made between terms is for the next one. Real Fall 2026 dues started
+    arriving 08/12, three days before the term's 08/15 start, and fell outside
+    every window. The first term keeps its own start -- there is nothing before
+    it to reach back to.
+    """
+    out: list[DuesWindow] = []
+    for window in windows:
+        if out and out[-1].end + timedelta(days=1) < window.start:
+            window = replace(window, start=out[-1].end + timedelta(days=1))
+        out.append(window)
+    return tuple(out)
+
+
 class DuesSchedule:
     """
     Which dues amounts are valid, and when.
@@ -106,7 +124,7 @@ class DuesSchedule:
         accept_venmo_net: bool = False,
         venmo_fee_tolerance: Decimal = VENMO_FEE_TOLERANCE,
     ) -> None:
-        self._windows = tuple(sorted(windows, key=lambda w: w.start))
+        self._windows = _reach_back(sorted(windows, key=lambda w: w.start))
         self._default_rates = tuple(default_rates)
         # OFF by default: accepting net-of-fee amounts books income that exact
         # matching would leave for a human, and that is a treasurer's call.
@@ -172,6 +190,10 @@ FOOD_MERCHANT_KEYWORDS: tuple[str, ...] = (
     "asian", "mexic", "menchies", "mr and mrs crab", "hana sushi", "las carretas",
     "escapology", "bagel", "bakery", "taco", "wings", "subway", "jimmy john",
     "panera", "sam's club", "walmart", "wm supercenter", "costco", "target",
+    # Toast, the restaurant point-of-sale: its charges read "TST*<restaurant>",
+    # and the restaurant name is often cut off ("TST*MI APA LATIN C" on a $641
+    # meeting-day order). Bars use Toast too; `looks_like_bar` still wins.
+    "tst*",
 )
 
 BAR_LIQUOR_KEYWORDS: tuple[str, ...] = (
@@ -192,6 +214,8 @@ MEETING_WEEKDAYS = frozenset({"Tuesday", "Wednesday"})
 
 COMMITTEE_PURPOSE: dict[int, str] = {
     1: "Dues",
+    2: "Misc.",
+    3: "Transfers",
     5: "Food & Drink",
     7: "Professional Development",
     8: "Meeting Food",
@@ -285,12 +309,87 @@ MEMO_COMMITTEE_KEYWORDS: tuple[tuple[tuple[str, ...], int, str], ...] = (
 DUES_MEMO_RE = re.compile(r"\b(dues|membership fee)\b", re.I)
 
 
+# A dues-amount payment is booked as dues unless its memo uses one of these.
+# Each names something a member pays the chapter for that is NOT dues. Matched
+# as word prefixes against the memo only (never the payer's name), so "reimburs"
+# catches reimbursement and reimburse.
+#
+# Deliberately absent, because they appear on real dues payments in the Fall
+# 2026 statements: "registration", "entry", "entrance", "enrollment",
+# "application", "fee". The committee keywords (formal, merch, road trip,
+# social, gbm) are not repeated here -- `rule_memo_committee` runs first and
+# books those outright.
+DUES_CONFLICT_KEYWORDS: tuple[str, ...] = (
+    "ticket", "refund", "reimburs", "pay back", "payback", "paying back", "owe",
+    "rent", "deposit", "donat", "sponsor", "gift", "food", "pizza", "dinner",
+    "lunch", "banquet", "gala", "event", "trip", "shirt", "jersey", "conference",
+    "loan", "split",
+)
+
+# Confidence on a dues-amount payment with nothing in its memo arguing.
+DUES_AMOUNT_CONFIDENCE = 0.99
+
+# "ZELLE FROM JANE DOE ON 08/19 REF # BACX1234 <memo>" -- everything the payer
+# typed comes after the reference number. Wells Fargo puts the payer's name
+# before it, which is why the memo has to be sliced out rather than searched
+# for in the whole string.
+_AFTER_REF_RE = re.compile(r"ref\s*#\s*\S+\s*(.*)$", re.I | re.S)
+
+
+def extract_memo(details: object) -> str:
+    """
+    The part of a transfer description the payer wrote.
+
+    Returns "" when there is no memo, which is the common case and must not be
+    confused with a memo naming nobody in particular.
+    """
+    if details is None:
+        return ""
+    text = _WHITESPACE_RE.sub(" ", str(details)).strip()
+
+    match = _AFTER_REF_RE.search(text)
+    if match:
+        return match.group(1).strip()
+
+    # Venmo: "txn id | note | from | to"
+    if "|" in text:
+        parts = [part.strip() for part in text.split("|")]
+        if len(parts) >= 2:
+            return parts[1]
+    return ""
+
+
 def mentions_dues(details: object) -> bool:
     """Does this transfer's memo call itself dues?"""
     return bool(DUES_MEMO_RE.search(_text(details)))
 
 
-def committee_from_memo(details: object) -> tuple[int, str, str] | None:
+# Memo keywords trusted on OUTGOING transfers only. "membership" is the reason
+# this table exists: on an incoming payment it means dues (20 of 21 real memos),
+# which is why it is barred from the table above. But dues are never paid *out*,
+# so on a reimbursement -- "MEMBERSHIP REIMBURSEMENT" -- it can only mean the
+# Membership committee's spending. Real examples, Checking (5).csv, 09/14/2026.
+OUTGOING_MEMO_COMMITTEE_KEYWORDS: tuple[tuple[tuple[str, ...], int, str], ...] = (
+    (("meeting food",), 8, "meeting food"),
+    (("membership",), 5, "membership"),
+)
+
+# Outgoing memos naming Consulting go to Consulting, whatever else they say
+# (treasury, 2026-10-12: "if the memos say consulting it should go to
+# consulting"). Checked ahead of every other keyword, so "CONSULTING MEETING
+# FOOD REIMBURSEMENT" is Consulting's food, not GBM food. Spring 2026 had
+# $911 of "CONSULTING FOOD" reimbursements booked to Meeting Food by scoring.
+#
+# Outgoing only: the one incoming memo mentioning it in four years of data is
+# "PAYMENT FOR AIS HOODIE WITH CONSULTING COM..." -- merch, not Consulting.
+OUTGOING_FIRST_MEMO_KEYWORDS: tuple[tuple[tuple[str, ...], int, str], ...] = (
+    (("consulting",), 7, "consulting"),
+)
+
+
+def committee_from_memo(
+    details: object, *, outgoing: bool = False
+) -> tuple[int, str, str] | None:
     """
     The committee a transfer memo names, if it names one.
 
@@ -300,7 +399,15 @@ def committee_from_memo(details: object) -> tuple[int, str, str] | None:
     text = _text(details)
     if not text:
         return None
-    for keywords, committee_id, label in MEMO_COMMITTEE_KEYWORDS:
+    if outgoing:
+        tables = (
+            OUTGOING_FIRST_MEMO_KEYWORDS
+            + MEMO_COMMITTEE_KEYWORDS
+            + OUTGOING_MEMO_COMMITTEE_KEYWORDS
+        )
+    else:
+        tables = MEMO_COMMITTEE_KEYWORDS
+    for keywords, committee_id, label in tables:
         for keyword in keywords:
             if keyword in text:
                 return committee_id, label, keyword
@@ -456,8 +563,15 @@ def looks_like_bar(details: object) -> bool:
     return _has_any(text, BAR_LIQUOR_KEYWORDS) or bool(_BAR_WORD_RE.search(text))
 
 
+# Food-list merchants whose counter here sells something else. "target" is on
+# the food list for grocery runs; Target's copy centre prints flyers (two 9570
+# charges in Checking (5).csv, 09/16/2026).
+NOT_FOOD_KEYWORDS: tuple[str, ...] = ("target copy",)
+
+
 def looks_like_food_merchant(details: object) -> bool:
-    return _has_any(_text(details), FOOD_MERCHANT_KEYWORDS)
+    text = _text(details)
+    return _has_any(text, FOOD_MERCHANT_KEYWORDS) and not _has_any(text, NOT_FOOD_KEYWORDS)
 
 
 # --- Individual rules --------------------------------------------------------
@@ -514,6 +628,62 @@ def rule_reimbursement(record: dict) -> Classification | None:
     return REIMBURSEMENT_UNRESOLVED
 
 
+def rule_internal_transfer(record: dict) -> Classification | None:
+    """
+    The organisation moving its own money between its own accounts.
+
+    A Zelle into checking whose memo says "Venmo" is the Venmo balance being
+    cashed out to the bank. Treasury ruled (2026-10-01) that these are not
+    income: the money was already ours and only changed accounts. Booked as
+    Transfers (a ledger committee), and `budgets._totals_for` keeps that
+    committee out of income and expenses.
+
+    Zelle only. A payment arriving *on* the Venmo account whose memo happens to
+    say "venmo" is not evidence of anything.
+    """
+    amount = parse_amount(record.get("amount"))
+    if amount is None:
+        return None
+    text = _WHITESPACE_RE.sub(" ", _text(record.get("details")))
+    # Venmo's own ACH lines on the checking side: a cash-out of the Venmo
+    # balance ("VENMO CASHOUT", $11,628.80 when Venmo was retired in April 2026)
+    # and the micro-deposits Venmo sends to verify a linked bank account.
+    for marker in VENMO_ACH_TRANSFERS:
+        if text.startswith(marker):
+            return _assign(
+                3,
+                f"Transfer ({marker.upper()} -- the chapter's Venmo account and checking)",
+                confidence=1.0,
+            )
+    if "zelle" not in text or "venmo" not in text:
+        return None
+    direction = "in" if amount > 0 else "out"
+    return _assign(
+        3,
+        f"Transfer (Zelle {direction} whose memo says Venmo -- the chapter's own money moving between accounts)",
+        confidence=1.0,
+    )
+
+
+VENMO_ACH_TRANSFERS: tuple[str, ...] = ("venmo cashout", "venmo acctverify")
+
+# The bank's own charges. Treasury owns them -- the 2023 ledger and the old app
+# both booked bank fees to committee 2.
+BANK_FEE_MARKERS: tuple[str, ...] = ("monthly service fee", "overdraft fee", "wire transfer fee")
+
+
+def rule_bank_fee(record: dict) -> Classification | None:
+    """A charge from the bank itself."""
+    amount = parse_amount(record.get("amount"))
+    if amount is None or amount >= 0:
+        return None
+    text = _WHITESPACE_RE.sub(" ", _text(record.get("details"))).strip()
+    for marker in BANK_FEE_MARKERS:
+        if text.startswith(marker):
+            return _assign(2, f"Bank fee ('{marker}')", confidence=1.0)
+    return None
+
+
 def rule_memo_committee(record: dict) -> Classification | None:
     """
     A transfer whose memo says what the money was for.
@@ -532,7 +702,7 @@ def rule_memo_committee(record: dict) -> Classification | None:
     details, account = record.get("details"), record.get("account")
     if not is_venmo_or_zelle(details, account):
         return None
-    found = committee_from_memo(details)
+    found = committee_from_memo(details, outgoing=amount < 0)
     if found is None:
         return None
     committee_id, label, keyword = found
@@ -544,13 +714,31 @@ def rule_memo_committee(record: dict) -> Classification | None:
     )
 
 
+def dues_conflict(details: object) -> str | None:
+    """The word in a transfer's memo that says it is something other than dues."""
+    memo = extract_memo(details).lower()
+    if not memo:
+        return None
+    for keyword in DUES_CONFLICT_KEYWORDS:
+        if re.search(rf"\b{re.escape(keyword)}", memo):
+            return keyword
+    return None
+
+
 def rule_dues(record: dict, schedule: DuesSchedule | None = None) -> Classification | None:
     """
-    An exact dues amount arriving by Venmo or Zelle.
+    A dues amount arriving by Venmo or Zelle -- unless the memo says otherwise.
 
     `schedule` supplies the rates in force for the transaction's term. Omitting
     it falls back to `DUES_AMOUNTS`, which is what the rule did before rates
     became per-term data.
+
+    Treasury, 2026-10-01: a Zelle at a dues amount is dues "ninety-nine percent
+    of the time", so it books at DUES_AMOUNT_CONFIDENCE -- with no memo, or a
+    memo that is only a name, included. The other one percent is a memo that
+    says something else ("formal ticket", "pay back"); that row is not booked
+    as dues but handed on with the reason, for the model to decide and a human
+    after it.
     """
     amount = parse_amount(record.get("amount"))
     if amount is None or amount <= 0:
@@ -562,15 +750,29 @@ def rule_dues(record: dict, schedule: DuesSchedule | None = None) -> Classificat
     if schedule is None:
         if not equals_any(amount, DUES_AMOUNTS):
             return None
-        return _assign(1, "Dues (exact dues amount via Venmo or Zelle)", confidence=1.0)
+        where = ""
+    else:
+        when = record_date(record)
+        if not schedule.matches(amount, when, is_venmo=is_venmo(details, account)):
+            return None
+        window = schedule.window_for(when)
+        where = f" for {window.semester}" if window is not None else ""
 
-    when = record_date(record)
-    if not schedule.matches(amount, when, is_venmo=is_venmo(details, account)):
-        return None
-
-    window = schedule.window_for(when)
-    where = f" for {window.semester}" if window is not None else ""
-    return _assign(1, f"Dues (dues rate{where} via Venmo or Zelle)", confidence=1.0)
+    conflict = dues_conflict(details)
+    if conflict is not None:
+        return Classification(
+            committee_id=None,
+            purpose=None,
+            rule=(
+                f"Dues amount (${amount:,.2f}{where}), but the memo says "
+                f"'{conflict}' -- may not be dues"
+            ),
+            confidence=0.0,
+            source="none",
+        )
+    return _assign(
+        1, f"Dues (dues rate{where} via Venmo or Zelle)", confidence=DUES_AMOUNT_CONFIDENCE
+    )
 
 
 def rule_dues_memo(record: dict) -> Classification | None:
@@ -642,6 +844,8 @@ def rule_membership_bar(record: dict) -> Classification | None:
 # because it resolves nothing -- it only labels an outgoing transfer the memo
 # could not place, and must not pre-empt a rule that could have placed it.
 EXACT_RULES: tuple[Callable[[dict], Classification | None], ...] = (
+    rule_internal_transfer,
+    rule_bank_fee,
     rule_memo_committee,
     rule_dues,
     rule_dues_memo,
@@ -684,6 +888,8 @@ def exact_rules(
     if dues is None:
         return EXACT_RULES
     return (
+        rule_internal_transfer,
+        rule_bank_fee,
         rule_memo_committee,
         partial(rule_dues, schedule=dues),
         rule_dues_memo,

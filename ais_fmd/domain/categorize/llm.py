@@ -30,6 +30,7 @@ import json
 from dataclasses import dataclass, field
 
 from ... import settings
+from ...config.categories import COMMITTEE_BY_ID
 from .predicates import (
     COMMITTEE_PURPOSE,
     Classification,
@@ -38,30 +39,54 @@ from .predicates import (
     weekday_from_details,
 )
 
-# The residual decision is narrow: which committee owns this merchant.
-ALLOWED_COMMITTEES = (5, 7, 8, 10, 13, 14, 15)
+# Any committee. The residual used to be only unknown merchants; since
+# 2026-10-01 it also takes the rows the rules flagged as contested -- a dues
+# amount whose memo says something else, a Consulting card at a meeting-day
+# catering order -- and those can belong anywhere.
+ALLOWED_COMMITTEES = tuple(sorted(COMMITTEE_BY_ID))
 
 _SYSTEM_PROMPT = """\
 You categorize bank transactions for a university student organization.
 
 Deterministic rules have already been applied upstream. Every transaction you \
-are given is one that no rule and no known-merchant mapping could resolve, so \
-your only job is to identify what kind of merchant or expense it is.
+are given is one they could not settle: either nothing recognised it, or the \
+evidence conflicts. When the rules noticed something, it is given as \
+Upstream_Note -- read it first; it says what the conflict is.
 
 Choose exactly one committee ID per transaction:
+  1  Dues                    a member paying membership dues
+  2  Treasury                bank fees, the treasurer's own operating costs
+  3  Transfers               the chapter moving its own money between accounts
+  4  President               president's discretionary spending
   5  Membership              bars, social venues, member social spending
-  7  Consulting              consulting-project costs
-  8  Meeting Food            groceries or restaurants bought for a chapter meeting
-  10 Professional Development  conferences, training, career events
-  13 Merch                   apparel, printing, promotional goods
-  14 Road Trip               travel, lodging, transport
+  6  Operations              the VP of Operations' own committee spending (formerly Corporate Relations)
+  7  Consulting              consulting-project costs, including catering its own events
+  8  Meeting Food            groceries or restaurants bought for a general body meeting
+  9  Marketing               advertising, flyers, design tools
+  10 Professional Development  conferences, training, career events, headshots
+  11 Sponsorship / Donation  money received from a sponsor or donor
+  12 Overhead                general operating costs no committee owns
+  13 Merch                   apparel, printing, promotional goods, or a member paying for them
+  14 Road Trip               travel, lodging, transport, or a member paying for a trip
   15 Technology              software, hosting, domains, hardware
+  16 Passport                the ISOM Passport program
+  17 Refunded                money coming back from a merchant
+  18 Formal                  the formal / semi-formal, or a member paying for a ticket
   0  Unknown                 genuinely cannot tell
 
 Rules of thumb:
-  - Weekday_Hint of Tuesday or Wednesday plus a food merchant strongly suggests 8.
+  - Weekday_Hint of Tuesday or Wednesday plus a food merchant suggests 8 -- \
+but if the note says the card belongs to Consulting, a large order is often \
+Consulting catering its own event. Only choose 8 over the card with a reason.
+  - The VP of Operations' card buys mostly meeting food (8). Her own \
+committee (6) gets the occasional rewards or appreciation outing -- a sit-down \
+restaurant bill for a few people rather than a meeting-sized order.
   - A bar, brewery or liquor store is 5, never 8.
-  - When the merchant is unrecognisable, answer 0 rather than guessing.
+  - An incoming payment at a dues amount is dues unless its memo clearly says \
+it paid for something else; then choose that.
+  - Report confidence honestly. Anything under 0.75 is sent to a human with \
+your suggestion, which is the right outcome when you are unsure.
+  - When the transaction is unrecognisable, answer 0 rather than guessing.
 
 Respond with JSON only: {"results":[{"index":<int>,"committee_id":<int>,\
 "confidence":<0.0-1.0>,"reason":"<short>"}]}\
@@ -100,11 +125,13 @@ def _render_row(index: int, record: dict) -> str:
         hints.append("food-merchant-keyword")
     if looks_like_bar(details):
         hints.append("bar-keyword")
-    return (
+    line = (
         f'{index}. Details: {details[:180]} | Amount: {record.get("amount")} | '
         f'Account: {record.get("account") or ""} | Weekday_Hint: {weekday} | '
         f'Local_Hints: {",".join(hints) or "none"}'
     )
+    note = str(record.get("upstream_note") or "")
+    return f"{line} | Upstream_Note: {note[:200]}" if note else line
 
 
 def _parse_response(payload: str, batch: list[tuple[int, dict]]) -> dict[int, Classification]:
@@ -139,7 +166,7 @@ def _parse_response(payload: str, batch: list[tuple[int, dict]]) -> dict[int, Cl
         reason = str(item.get("reason") or "").strip()[:120]
         out[original_index] = Classification(
             committee_id=committee_id,
-            purpose=COMMITTEE_PURPOSE.get(committee_id),
+            purpose=COMMITTEE_PURPOSE.get(committee_id, "Misc."),
             rule=f"Model: {reason}" if reason else "Model",
             confidence=max(0.0, min(1.0, confidence)),
             source="llm",

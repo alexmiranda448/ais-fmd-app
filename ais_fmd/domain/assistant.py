@@ -198,6 +198,8 @@ def tool_income_summary(question: str, context: Context) -> Answer:
     scoped = _scope(context, semester)
 
     income = scoped[scoped["amount"] > 0].copy()
+    if "budget_category" in income.columns:
+        income = income[~budget_domain.is_transfer(income)]  # transfers are not income
     if account:
         income = income[income["account"].astype(str).str.contains(account.split()[0], case=False, na=False)]
 

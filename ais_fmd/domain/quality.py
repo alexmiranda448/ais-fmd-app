@@ -24,7 +24,7 @@ from ..config.categories import (
     committee_name,
     legacy_account_values,
 )
-from .categorize.predicates import is_venmo_or_zelle, mentions_dues
+from .categorize.predicates import extract_memo, is_venmo_or_zelle, mentions_dues
 from .categorize.scoring import (
     CardRegistry,
     card_number,
@@ -32,7 +32,7 @@ from .categorize.scoring import (
     roster_status,
 )
 from .dedupe import identity_tuple
-from .dues import schedule_from_terms
+from .dues import DUES_COMMITTEE_ID, extract_payer, schedule_from_terms
 from .money import parse_amount
 
 SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
@@ -76,6 +76,7 @@ def run_all_checks(
         check_disputed_mappings,
         check_unverified_dues_rates,
         check_possible_dues_rate_change,
+        check_repeat_dues_payers,
         check_card_roster_era,
     ):
         try:
@@ -454,6 +455,65 @@ def check_unverified_dues_rates(df_transactions, df_budgets, df_terms) -> Issue 
         ),
         count=len(unverified),
         rows=unverified.head(200),
+    )
+
+
+def check_repeat_dues_payers(df_transactions, df_budgets, df_terms) -> Issue | None:
+    """
+    One sender, more than one dues payment in the same term.
+
+    The categorizer judges one row at a time, so it cannot see this. Found by
+    reading the Fall 2026 statement whole (2026-10-01): $35 on 07/08 plus $15 on
+    08/13 from one member is a top-up to the $50 rate, and $35 plus $65 from
+    another is $100 for one term -- possibly a double payment owed a refund.
+    Someone paying for several friends shows up here too; the memos column
+    says which it is.
+    """
+    if df_transactions.empty or "budget_category" not in df_transactions.columns:
+        return _no_issue()
+    from .terms import attach_semester, dues_terms
+
+    dues = df_transactions[df_transactions["budget_category"] == DUES_COMMITTEE_ID].copy()
+    dues = dues[pd.to_numeric(dues["amount"], errors="coerce") > 0]
+    if dues.empty:
+        return _no_issue()
+    dues["Payer"] = dues["details"].map(extract_payer)
+    dues = dues[dues["Payer"].notna()]
+    dues = attach_semester(dues, dues_terms(df_terms))
+    dues = dues[dues["Semester"].notna()]
+    if dues.empty:
+        return _no_issue()
+
+    dues["Memo"] = dues["details"].map(extract_memo)
+    groups = dues.groupby(["Semester", "Payer"])
+    repeat = groups.filter(lambda g: len(g) > 1)
+    if repeat.empty:
+        return _no_issue()
+
+    rows = (
+        repeat.groupby(["Semester", "Payer"], as_index=False)
+        .agg(
+            Payments=("amount", "size"),
+            Total=("amount", "sum"),
+            Amounts=("amount", lambda s: " + ".join(f"${float(a):,.2f}" for a in s)),
+            Memos=("Memo", lambda s: " | ".join(m or "(no memo)" for m in s)),
+        )
+        .sort_values("Total", ascending=False)
+        .reset_index(drop=True)
+    )
+    return Issue(
+        code="repeat_dues_payers",
+        severity="low",
+        title="Members who paid dues more than once in a term",
+        detail=(
+            "Each row is one sender with several dues payments in the same "
+            "term. Usually one of three things -- read the memos:\n\n"
+            "- a **top-up** (35 then 15, reaching the 50 rate): fine as is\n"
+            "- **paying for other members** (memos name different people): fine as is\n"
+            "- a **double payment** (more than the top rate, same person): may be owed a refund"
+        ),
+        count=len(rows),
+        rows=rows,
     )
 
 

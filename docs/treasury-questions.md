@@ -303,3 +303,27 @@ Asserted in `tests/test_treasury_decisions.py` (the Fall 2026 cards, 8408 not
 carrying over, a Membership card at a Tuesday food run staying Membership, the
 treasurer's card) and `tests/test_scoring.py` (the card outweighing a full
 meeting-food reading).
+
+---
+
+# Round 4 — rulings, 2026-10-01
+
+| # | Ruling | Where it landed |
+| --- | --- | --- |
+| 7 | **$35 is an official exec dues rate**, at least for Fall 2026. All nine $35 payments in `Checking (4).csv` now book as dues. | `dues.CONFIRMED_DUES_RATES["Fall 2026"]`; run `scripts/apply_treasury_rates.py --apply` against each database |
+| 6 | **The two $500 Venmo Zelles are not income.** They were the chapter's existing money moved between accounts. A Zelle whose memo says "Venmo" is booked to Transfers (3), and Transfers are left out of the income and expense totals. | `rule_internal_transfer`; `budgets._totals_for`, `budgets.categorize_flow`, the assistant's income answer |
+| 10 (revised) | **The card is the default, not a verdict.** It is "taken unless all of the other classifications point towards it not being the case", because members sometimes buy for another committee (meeting food especially) with the card they have on hand. A confirmed card stands unless *every* other signal agrees on one other committee with nothing opposing it. Today that means a catering-sized ($75+) food purchase on a Tue/Wed. Partial dissent is noted in the reason but does not move the row. | `pipeline._overrules_the_card`, `scoring.CARD_OVERRULE_EVIDENCE` |
+
+A known consequence, pinned in `test_consulting_catering_on_a_meeting_day_reads_as_meeting_food`: a Consulting card buying $210 of Chipotle on a Tuesday now reads as Meeting Food.
+
+### Round 4, continued (2026-10-01)
+
+| # | Ruling | Where it landed |
+| --- | --- | --- |
+| 13 | **Dues windows start the day after the previous term ends.** Nobody pays dues for a semester that is over. Fall 2026 dues arrived from 08/12 while the term starts 08/15. This applies to dues matching and the dues pages only. Spending keeps the real term dates. | `predicates._reach_back`, `terms.dues_terms` |
+| 14 | **A dues amount is dues at 99%, unless the memo says otherwise.** A payment with no memo or a name-only memo still books. A memo naming something else (ticket, pay back, reimbursement, gala…) sends the row to the model with that reason, then to a human. | `rule_dues`, `DUES_CONFLICT_KEYWORDS` |
+| 15 | **Consulting cards are never auto-overruled.** A full meeting-food reading on a Consulting card goes to the model and then a human, with Consulting suggested first. The rule is keyed on the committee, so it carries to next year's card. | `scoring.REVIEW_ON_CARD_CONFLICT` |
+| 16 | **Push contested rows to the model, not straight to a human.** The model now sees every committee and the reason a row was flagged. It only books at 75%+ confidence. Below that, its suggestion goes to the Review Queue. | `llm._SYSTEM_PROMPT`, `pipeline.categorize_records` |
+| 17 | **Card 9570 is the VP of Operations.** She buys the meeting food, plus the occasional thing for her own committee (the $66.67 Chili's was a rewards dinner). Committee 6, formerly Corporate Relations and now defunct, is renamed **Operations**. Her card defaults to Operations. A catering-sized meeting-day food order on it goes to Meeting Food, and smaller meeting-day food goes to the model and then review. | `config/card_roster.json`, `categories.py`, migration 006, `scoring.REVIEW_MEETING_DAY_FOOD_ON` |
+| 18 | **Outgoing reimbursement memos that name their committee are booked.** "MEMBERSHIP REIMBURSEMENT" → Membership and "MEETING FOOD REIMBURSEMENT" → Meeting Food. This only applies to outgoing transfers, because on incoming payments "membership" means dues. | `OUTGOING_MEMO_COMMITTEE_KEYWORDS` |
+| 19 | **An outgoing memo that says "consulting" is Consulting**, whatever else it says ("CONSULTING MEETING FOOD REIMBURSEMENT" included). It's checked before every other memo keyword. Outgoing only, because the one incoming example is a hoodie payment. This moved $911 of Spring 2026 "Consulting food" reimbursements out of Meeting Food, and resolved 7 more Consulting reimbursements that were in review. | `predicates.OUTGOING_FIRST_MEMO_KEYWORDS` |

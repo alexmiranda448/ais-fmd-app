@@ -59,7 +59,7 @@ FALL_2026 = DuesWindow(
     semester="Fall 2026",
     start=date(2026, 8, 15),
     end=date(2026, 12, 18),
-    rates=(Decimal("50.00"), Decimal("65.00")),
+    rates=(Decimal("35.00"), Decimal("50.00"), Decimal("65.00")),
     verified=True,
 )
 
@@ -69,7 +69,9 @@ FALL_2026 = DuesWindow(
 # "Last term was 35 early and 52.5 late. This term it's 50 and 65."
 
 def test_fall_2026_rates_are_recorded_and_confirmed():
+    """$35 is the exec rate -- official "for at least this semester" (2026-10-01)."""
     assert dues_module.CONFIRMED_DUES_RATES["Fall 2026"] == (
+        Decimal("35.00"),
         Decimal("50.00"),
         Decimal("65.00"),
     )
@@ -84,15 +86,164 @@ def test_the_new_rates_are_recognised_as_dues():
     new term fell through to the review queue and dues income read as collapsed.
     """
     schedule = DuesSchedule([FALL_2026])
-    for amount in (50.00, 65.00):
+    for amount in (35.00, 50.00, 65.00):
         result = classify_exact(row(zelle_from(), amount), dues=schedule)
         assert result.committee_id == 1, f"${amount} should be dues in Fall 2026"
 
 
 def test_the_old_rates_stop_being_dues_once_the_term_changed():
-    """A rate that is no longer charged must not keep matching."""
+    """A rate that is no longer charged must not keep matching. $52.50 was Spring 2026's."""
     schedule = DuesSchedule([FALL_2026])
-    assert classify_exact(row(zelle_from(), 35.00), dues=schedule).committee_id != 1
+    assert classify_exact(row(zelle_from(), 52.50), dues=schedule).committee_id != 1
+
+
+# --- Dues: 99% on the amount, unless the memo argues (2026-10-01) ---------------
+
+@pytest.mark.parametrize("memo", ["", " JACOB TASTENSEN", " AIS DUES", " ENTRY PAYMENT", " ENROLLMENT FOR JACOB"])
+def test_a_dues_amount_is_dues_at_99_percent(memo):
+    result = classify_exact(row(zelle_from() + memo, 50.00), dues=DuesSchedule([FALL_2026]))
+    assert result.committee_id == 1
+    assert result.confidence == 0.99
+
+
+@pytest.mark.parametrize("memo", ["FORMAL TICKET", "PAY BACK FOR DINNER", "REIMBURSEMENT", "GALA TICKET"])
+def test_a_dues_amount_whose_memo_says_otherwise_is_not_booked_as_dues(memo):
+    result = classify_exact(row(f"{zelle_from()} {memo}", 50.00), dues=DuesSchedule([FALL_2026]))
+    assert result.committee_id != 1
+
+
+def test_a_conflicting_memo_reaches_the_model_with_the_reason(monkeypatch):
+    from ais_fmd.domain.categorize import pipeline
+    from ais_fmd.domain.categorize.llm import LLMOutcome
+
+    seen = []
+    monkeypatch.setattr(pipeline, "classify_residual", lambda r: seen.extend(r) or LLMOutcome())
+    run = categorize_records([row(zelle_from() + " PAY BACK FOR DINNER", 50.00)],
+                             dues=DuesSchedule([FALL_2026]))
+    assert not run.classifications[0].is_assigned
+    assert "pay back" in seen[0][1]["upstream_note"]
+
+
+def test_the_payers_name_is_never_read_as_a_conflict():
+    """'Event' or 'Gift' could be a surname; only the memo is checked."""
+    result = classify_exact(row("ZELLE FROM ROSE GIFT ON 08/19 REF # A1 AIS DUES", 50.00),
+                            dues=DuesSchedule([FALL_2026]))
+    assert result.committee_id == 1
+
+
+# --- Dues windows reach back to the previous term's end (2026-10-01) -------------
+
+SPRING_2026 = DuesWindow("SP26", "Spring 2026", date(2026, 1, 5), date(2026, 5, 1),
+                         (Decimal("35.00"), Decimal("52.50")), verified=True)
+
+
+def test_dues_paid_before_the_term_starts_count_for_it():
+    """Real Fall 2026 dues began arriving 08/12; the term starts 08/15."""
+    schedule = DuesSchedule([SPRING_2026, FALL_2026])
+    result = classify_exact(row(zelle_from(), 50.00, when="2026-08-12"), dues=schedule)
+    assert result.committee_id == 1
+    assert "Fall 2026" in result.rule
+    assert schedule.window_for(date(2026, 5, 2)).semester == "Fall 2026"
+    assert schedule.window_for(date(2026, 5, 1)).semester == "Spring 2026"
+
+
+def test_the_dues_pages_count_early_payments_toward_the_coming_term():
+    terms = pd.DataFrame([
+        {"TermID": "SP26", "Semester": "Spring 2026", "start_date": "2026-01-05",
+         "end_date": "2026-05-01", "dues_rates": "35.00,52.50", "dues_rates_verified": 1},
+        {"TermID": "FA26", "Semester": "Fall 2026", "start_date": "2026-08-15",
+         "end_date": "2026-12-18", "dues_rates": "35.00,50.00,65.00", "dues_rates_verified": 1},
+    ])
+    txns = pd.DataFrame([
+        {"TransactionID": 1, "transaction_date": "2026-08-12", "amount": 50.00,
+         "details": "ZELLE FROM JANE DOE ON 08/12 REF # A1 AIS DUES", "account": "Wells Fargo",
+         "budget_category": 1},
+    ])
+    assert dues_module.summarize(txns, terms, "Fall 2026").payment_count == 1
+
+
+def test_dues_skip_summer_but_keep_terms_without_confirmed_rates():
+    """July dues count toward Fall; a term nobody confirmed rates for still has dues."""
+    from ais_fmd.domain.terms import attach_semester, dues_terms
+
+    terms = pd.DataFrame([
+        {"Semester": "Fall 2025", "start_date": "2025-08-20", "end_date": "2026-01-04", "dues_rates": None},
+        {"Semester": "Spring 2026", "start_date": "2026-01-05", "end_date": "2026-05-01", "dues_rates": "35.00,52.50"},
+        {"Semester": "Summer 2026", "start_date": "2026-05-02", "end_date": "2026-08-14", "dues_rates": None},
+        {"Semester": "Fall 2026", "start_date": "2026-08-15", "end_date": "2026-12-18", "dues_rates": "35.00,50.00,65.00"},
+    ])
+    txns = pd.DataFrame({"transaction_date": ["2025-09-03", "2026-07-08"]})
+    tagged = attach_semester(txns, dues_terms(terms))
+    assert list(tagged["Semester"]) == ["Fall 2025", "Fall 2026"]
+
+
+def test_repeat_dues_payers_are_surfaced():
+    from ais_fmd.domain.quality import check_repeat_dues_payers
+
+    terms = pd.DataFrame([
+        {"TermID": "FA26", "Semester": "Fall 2026", "start_date": "2026-08-15", "end_date": "2026-12-18"},
+    ])
+    txns = pd.DataFrame([
+        {"transaction_date": "2026-08-20", "amount": 35.00, "budget_category": 1,
+         "details": "ZELLE FROM JESSE DOE ON 08/20 REF # A1 AIS"},
+        {"transaction_date": "2026-08-30", "amount": 15.00, "budget_category": 1,
+         "details": "ZELLE FROM JESSE DOE ON 08/30 REF # A2 AIS DUES"},
+        {"transaction_date": "2026-08-30", "amount": 50.00, "budget_category": 1,
+         "details": "ZELLE FROM ONE TIMER ON 08/30 REF # A3 DUES"},
+    ])
+    issue = check_repeat_dues_payers(txns, pd.DataFrame(), terms)
+    assert issue is not None and issue.count == 1
+    assert issue.rows.iloc[0]["Total"] == 50.00
+
+
+# --- Internal transfers ---------------------------------------------------------
+#
+# "Those Venmo transfers are not income -- that was existing finances we had
+# access to. We just moved it from different accounts." (2026-10-01)
+
+@pytest.mark.parametrize("memo", ["VENMO REIMBURSEMENT", "VENMO TRANSFER"])
+def test_venmo_cashed_out_by_zelle_is_a_transfer(memo):
+    details = f"ZELLE FROM SAMPLE PERSON ON 07/01 REF # JFR0TQ6QPUIM {memo}"
+    result = classify_exact(row(details, 500.00, when="2026-07-01"))
+    assert result.committee_id == 3
+
+
+@pytest.mark.parametrize("details, amount", [
+    ("VENMO            CASHOUT    260421 1049771990944 JORDAN REVIS", 11628.80),
+    ("VENMO ACCTVERIFY 260418 1049698300353 GRADY SVETLY", -0.35),
+])
+def test_venmos_own_ach_lines_are_transfers(details, amount):
+    assert classify_exact(row(details, amount, when="2026-04-22")).committee_id == 3
+
+
+def test_a_monthly_service_fee_is_treasury():
+    assert classify_exact(row("MONTHLY SERVICE FEE", -15.00)).committee_id == 2
+
+
+def test_a_member_zelle_is_not_a_transfer():
+    assert classify_exact(row(zelle_from() + " AIS DUES", 50.00)).committee_id != 3
+
+
+def test_transfers_are_neither_income_nor_expense():
+    from ais_fmd.domain.budgets import _totals_for
+
+    frame = pd.DataFrame([
+        {"amount": 500.00, "budget_category": 3},
+        {"amount": 65.00, "budget_category": 1},
+        {"amount": -40.00, "budget_category": 8},
+    ])
+    totals = _totals_for(frame)
+    assert totals["income"] == 65.00
+    assert totals["expenses"] == 40.00
+
+
+def test_uncategorized_rows_still_count_toward_totals():
+    """The nullable-integer trap: NA != 3 is NA, and a mask drops NA rows."""
+    from ais_fmd.domain.budgets import _totals_for
+
+    frame = pd.DataFrame({"amount": [15.00, 65.00, 500.00],
+                          "budget_category": pd.array([None, 1, 3], dtype="Int64")})
+    assert _totals_for(frame)["income"] == 80.00
 
 
 def test_earlier_terms_are_left_unconfirmed_on_purpose():
@@ -472,6 +623,7 @@ FALL_2026_CARDS = {
     "7101": 5,  # Membership
     "3526": 4,  # President
     "3466": 2,  # Treasury -- the treasurer's own card (US Mobile), 2026-09-23
+    "9570": 6,  # Operations (formerly Corporate Relations) -- VP Operations, 2026-10-01
 }
 
 
@@ -504,6 +656,69 @@ def test_a_membership_card_at_a_tuesday_food_run_is_membership():
     record["transaction_date"] = "2026-09-01"
     run = categorize_records([record])
     assert run.classifications[0].committee_id == 5
+
+
+@pytest.mark.parametrize("memo, committee", [
+    ("MEETING FOOD REIMBURSEMENT", 8),
+    ("MEMBERSHIP REIMBURSEMENT", 5),
+])
+def test_an_outgoing_memo_naming_its_committee_is_booked(memo, committee):
+    assert classify_exact(row(f"{zelle_to()} {memo}", -105.44)).committee_id == committee
+
+
+@pytest.mark.parametrize("memo", [
+    "CONSULTING FOOD",
+    "CONSULTING MEETING FOOD REIMBURSEMENT",
+    "AIS CONSULTING TRAVEL REIMBURSEMENT",
+    "CONSULTING GBM FOOD",
+])
+def test_an_outgoing_memo_naming_consulting_is_consulting(memo):
+    """Treasury, 2026-10-12: consulting in the memo wins over every other word."""
+    assert classify_exact(row(f"{zelle_to()} {memo}", -403.69)).committee_id == 7
+
+
+def test_an_incoming_hoodie_payment_mentioning_consulting_stays_merch():
+    details = zelle_from() + " PAYMENT FOR AIS HOODIE WITH CONSULTING COMMITTEE"
+    assert classify_exact(row(details, 15.00)).committee_id == 13
+
+
+def test_membership_on_an_incoming_payment_is_still_dues():
+    """The trap the outgoing-only table exists to avoid."""
+    result = classify_exact(row(zelle_from() + " MEMBERSHIP DUES", 50.00), dues=DuesSchedule([FALL_2026]))
+    assert result.committee_id == 1
+
+
+def _ops(merchant: str, purchase: str, amount: float, when: str) -> dict:
+    record = row(f"PURCHASE AUTHORIZED ON {purchase} {merchant} GAINESVILLE FL CARD 9570", amount)
+    record["transaction_date"] = when
+    return record
+
+
+def test_the_operations_card_defaults_to_operations():
+    """The $66.67 Chili's was a rewards dinner for her committee, not meeting food."""
+    record = _ops("CHILI'S GAINESVILL", "09/16", -66.67, "2026-09-17")
+    result = categorize_records([record]).classifications[0]
+    assert result.committee_id == 6
+
+
+def test_a_meeting_sized_order_on_the_operations_card_is_meeting_food():
+    """The real $641.24 Toast order on Tuesday 09/22."""
+    record = _ops("TST*MI APA LATIN C 352-376-7020 FL", "09/22", -641.24, "2026-09-24")
+    assert categorize_records([record]).classifications[0].committee_id == 8
+
+
+def test_small_meeting_day_food_on_the_operations_card_goes_to_review():
+    """She mostly buys meeting food, so a $40 Tuesday grocery run is not defaulted to Operations."""
+    record = _ops("PUBLIX SUPER MAR", "09/15", -40.00, "2026-09-16")
+    run = categorize_records([record])
+    assert not run.classifications[0].is_assigned
+    assert run.held_for_review[0].winner == 8
+
+
+def test_other_cards_keep_their_default_on_small_meeting_day_food():
+    record = row("PURCHASE AUTHORIZED ON 09/15 PUBLIX SUPER MAR GAINESVILLE FL CARD 0594", -40.00)
+    record["transaction_date"] = "2026-09-16"
+    assert categorize_records([record]).classifications[0].committee_id == 5
 
 
 def test_the_treasurers_card_is_treasury():
